@@ -1,0 +1,199 @@
+"""LLM post-processing for cleaning up raw ASR transcription.
+
+Uses Ollama (local) with Qwen3-4B to convert messy spoken text
+into clean, formal written text.
+"""
+
+import json
+import logging
+import urllib.request
+import urllib.error
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+OLLAMA_BASE = "http://localhost:11434"
+DEFAULT_MODEL = "qwen2.5:3b"
+
+SYSTEM_PROMPT = """\
+You are a dictation text editor. You receive raw speech transcription and output clean written text.
+
+Rules you MUST follow:
+1. Remove ALL filler words: um, uh, like, you know, I mean, so, basically, actually, right, well, 嗯, 那个, 就是, 然后, 对, 这个, 啊, 那, 所以说
+2. Handle self-corrections: keep ONLY the final intent. "Tuesday no wait Wednesday" -> "Wednesday"
+3. Fix grammar, spelling, and capitalization
+4. Fix punctuation: merge broken sentence fragments. "这个。新的。并不能用。" is one sentence -> "这个新的并不能用。". Only put periods at real sentence boundaries.
+5. Convert spoken punctuation: "comma" -> , "period" -> . "question mark" -> ? "new line" -> newline "exclamation point" -> !
+6. If text mixes languages, unify into the dominant language. If a target language is specified, translate all foreign words into that language.
+7. Keep ALL information and meaning — do NOT drop or summarize content
+8. Output ONLY the cleaned text. No explanations, no labels, no quotes."""
+
+# Few-shot examples — most important example goes LAST
+FEW_SHOT = [
+    {
+        "role": "user",
+        "content": "这个。新的功能。并不能用。",
+    },
+    {
+        "role": "assistant",
+        "content": "这个新的功能并不能用。",
+    },
+    {
+        "role": "user",
+        "content": "嗯那个就是我想说一下就是这个项目然后需要在下周五之前完成",
+    },
+    {
+        "role": "assistant",
+        "content": "我想说一下，这个项目需要在下周五之前完成。",
+    },
+    {
+        "role": "user",
+        "content": "um so like I was thinking that we should you know meet on Tuesday no wait Wednesday at like 2 PM to discuss the uh the budget",
+    },
+    {
+        "role": "assistant",
+        "content": "I was thinking that we should meet on Wednesday at 2 PM to discuss the budget.",
+    },
+    {
+        "role": "user",
+        "content": "我想要一个new feature来improve这个app",
+    },
+    {
+        "role": "assistant",
+        "content": "我想要一个新功能来改善这个应用",
+    },
+    {
+        "role": "user",
+        "content": "Let's schedule a meeting to discuss the 预算 and 时间表",
+    },
+    {
+        "role": "assistant",
+        "content": "Let's schedule a meeting to discuss the budget and timeline",
+    },
+]
+
+
+class LLMCleanup:
+    """Cleans up raw ASR text using a local LLM via Ollama."""
+
+    def __init__(self, model: str = DEFAULT_MODEL) -> None:
+        self._model = model
+        self._available: Optional[bool] = None
+
+    def is_available(self) -> bool:
+        """Check if Ollama is running and the model is downloaded.
+
+        Only caches a positive result.  Transient failures (Ollama not
+        running yet) are retried on the next call so that starting
+        Ollama mid-session is supported.
+        """
+        if self._available is True:
+            return True
+        try:
+            req = urllib.request.Request(f"{OLLAMA_BASE}/api/tags")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read())
+                names = [m["name"] for m in data.get("models", [])]
+                # Match model name with or without :latest tag
+                self._available = (
+                    self._model in names
+                    or f"{self._model}:latest" in names
+                )
+                return self._available
+        except Exception:
+            self._available = None
+            return False
+
+    def warm_up(self) -> None:
+        """Pre-load the model into memory for fast first inference."""
+        if not self.is_available():
+            return
+        try:
+            body = json.dumps({
+                "model": self._model,
+                "keep_alive": "30m",
+                "prompt": "",
+            }).encode()
+            req = urllib.request.Request(
+                f"{OLLAMA_BASE}/api/generate",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30):
+                pass
+            logger.info("LLM model warmed up: %s", self._model)
+        except Exception as e:
+            logger.warning("LLM warm-up failed: %s", e)
+
+    def cleanup(self, raw_text: str, languages: Optional[list] = None) -> str:
+        """Clean up raw ASR text using the LLM.
+
+        Args:
+            raw_text: The raw ASR transcription text.
+            languages: Optional list of target language names
+                       (e.g. ["English"], ["English", "Chinese"]).
+                       If provided (excluding "Auto"), foreign words will be
+                       unified into the target language(s).
+
+        Returns the cleaned text, or the original text if cleanup fails.
+        """
+        if not raw_text.strip():
+            return raw_text
+
+        if not self.is_available():
+            return raw_text
+
+        try:
+            # Build user message with optional language context
+            effective_langs = [l for l in (languages or []) if l != "Auto"]
+            if effective_langs:
+                lang_str = ", ".join(effective_langs)
+                user_content = f"[Target language(s): {lang_str}] {raw_text}"
+            else:
+                user_content = raw_text
+
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                *FEW_SHOT,
+                {"role": "user", "content": user_content},
+            ]
+            body = json.dumps({
+                "model": self._model,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 512,
+                    "top_p": 0.9,
+                },
+            }).encode()
+            req = urllib.request.Request(
+                f"{OLLAMA_BASE}/api/chat",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                data = json.loads(resp.read())
+                cleaned = data["message"]["content"].strip()
+
+                # Strip any <think> tags that might leak through
+                if "<think>" in cleaned:
+                    idx = cleaned.find("</think>")
+                    if idx != -1:
+                        cleaned = cleaned[idx + len("</think>"):].strip()
+                    else:
+                        # No closing tag: strip from <think> onward
+                        cleaned = cleaned[:cleaned.find("<think>")].strip()
+
+                if cleaned:
+                    logger.info("LLM cleanup: %r -> %r", raw_text, cleaned)
+                    return cleaned
+
+        except urllib.error.URLError as e:
+            logger.warning("LLM cleanup network error: %s", e)
+        except Exception as e:
+            logger.warning("LLM cleanup failed: %s", e)
+
+        return raw_text
