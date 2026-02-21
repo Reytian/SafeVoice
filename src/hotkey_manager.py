@@ -11,12 +11,11 @@ Requires macOS Accessibility permission for global key monitoring.
 
 import logging
 import threading
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional
 
 import Quartz
 from ApplicationServices import AXIsProcessTrusted
 from Foundation import NSDictionary
-from pynput import keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -54,39 +53,6 @@ _MOD_SYMBOLS: Dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# pynput key mapping (for language-switch hotkey)
-# ---------------------------------------------------------------------------
-
-_PYNPUT_KEY_MAP: Dict[str, Any] = {
-    "space": keyboard.Key.space, "tab": keyboard.Key.tab,
-    "return": keyboard.Key.enter, "escape": keyboard.Key.esc,
-    "delete": keyboard.Key.delete,
-    "up": keyboard.Key.up, "down": keyboard.Key.down,
-    "left": keyboard.Key.left, "right": keyboard.Key.right,
-    "f1": keyboard.Key.f1, "f2": keyboard.Key.f2,
-    "f3": keyboard.Key.f3, "f4": keyboard.Key.f4,
-    "f5": keyboard.Key.f5, "f6": keyboard.Key.f6,
-    "f7": keyboard.Key.f7, "f8": keyboard.Key.f8,
-    "f9": keyboard.Key.f9, "f10": keyboard.Key.f10,
-    "f11": keyboard.Key.f11, "f12": keyboard.Key.f12,
-}
-
-_PYNPUT_MOD_MAP: Dict[str, Set[keyboard.Key]] = {
-    "alt": {keyboard.Key.alt_l, keyboard.Key.alt_r},
-    "ctrl": {keyboard.Key.ctrl_l, keyboard.Key.ctrl_r},
-    "shift": {keyboard.Key.shift_l, keyboard.Key.shift_r},
-    "cmd": {keyboard.Key.cmd_l, keyboard.Key.cmd_r},
-}
-
-_ALL_PYNPUT_MODIFIERS: Set[keyboard.Key] = {
-    keyboard.Key.alt_l, keyboard.Key.alt_r,
-    keyboard.Key.ctrl_l, keyboard.Key.ctrl_r,
-    keyboard.Key.shift_l, keyboard.Key.shift_r,
-    keyboard.Key.cmd_l, keyboard.Key.cmd_r,
-}
-
-
-# ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
@@ -105,27 +71,6 @@ def _parse_activate_hotkey(config: Dict[str, Any]):
     for mod in mods:
         mod_mask |= _MOD_NAME_TO_FLAG.get(mod, 0)
     return key_code, mod_mask
-
-
-def _parse_language_hotkey(config: Dict[str, Any]):
-    """Parse language-switch hotkey config for pynput.
-
-    Returns (pynput_key_or_None, set_of_pynput_modifier_keys).
-    """
-    if not config:
-        return None, set()
-    key_name = config.get("key", "")
-    mods = config.get("modifiers", [])
-
-    key = _PYNPUT_KEY_MAP.get(key_name)
-    if key is None and key_name and len(key_name) == 1:
-        key = keyboard.KeyCode.from_char(key_name)
-
-    mod_set: Set[keyboard.Key] = set()
-    for mod in mods:
-        if mod in _PYNPUT_MOD_MAP:
-            mod_set.update(_PYNPUT_MOD_MAP[mod])
-    return key, mod_set
 
 
 def _describe_config(config: Dict[str, Any]) -> str:
@@ -160,17 +105,12 @@ class HotkeyManager:
     def __init__(self) -> None:
         self._on_activate: Optional[Callable[[], None]] = None
         self._on_deactivate: Optional[Callable[[], None]] = None
-        self._on_language_switch: Optional[Callable[[], None]] = None
 
         # CGEventTap state (activation hotkey)
         self._cg_tap = None
         self._cg_loop_source = None
         self._cg_run_loop = None
         self._cg_thread: Optional[threading.Thread] = None
-
-        # pynput state (language-switch hotkey)
-        self._pynput_listener: Optional[keyboard.Listener] = None
-        self._pressed_modifiers: Set[keyboard.Key] = set()
 
         self._mode: str = "push_to_talk"
         self._is_active: bool = False
@@ -182,10 +122,6 @@ class HotkeyManager:
         # Track which modifier bits were active at activation (for release)
         self._activate_held_mods: int = 0
 
-        # Language hotkey config (pynput)
-        self._language_key = None
-        self._language_mods: Set[keyboard.Key] = set()
-
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -196,7 +132,6 @@ class HotkeyManager:
         self,
         on_activate: Callable[[], None],
         on_deactivate: Callable[[], None],
-        on_language_switch: Optional[Callable[[], None]] = None,
     ) -> None:
         """Start listening for global hotkeys."""
         with self._lock:
@@ -205,25 +140,15 @@ class HotkeyManager:
                 return
             self._on_activate = on_activate
             self._on_deactivate = on_deactivate
-            self._on_language_switch = on_language_switch
             self._is_active = False
-            self._pressed_modifiers.clear()
             self._activate_trigger_held = False
 
         self._start_cg_tap()
 
-        self._pynput_listener = keyboard.Listener(
-            on_press=self._on_pynput_press,
-            on_release=self._on_pynput_release,
-            daemon=True,
-        )
-        self._pynput_listener.start()
-
         logger.info(
-            "HotkeyManager started (mode=%s). Activate: %s | Language: %s",
+            "HotkeyManager started (mode=%s). Activate: %s",
             self._mode,
             self._describe_activate(),
-            self._describe_language(),
         )
 
     def stop(self) -> None:
@@ -238,9 +163,6 @@ class HotkeyManager:
             self._activate_trigger_held = False
 
         self._stop_cg_tap()
-        if self._pynput_listener is not None:
-            self._pynput_listener.stop()
-            self._pynput_listener = None
         logger.info("HotkeyManager stopped")
 
     def set_mode(self, mode: str) -> None:
@@ -276,14 +198,6 @@ class HotkeyManager:
             self._is_active = False
             self._activate_trigger_held = False
         logger.info("Activate hotkey changed to %s", config)
-
-    def set_language_hotkey(self, config: Dict[str, Any]) -> None:
-        """Update the language-switch hotkey from a settings dict."""
-        key, mods = _parse_language_hotkey(config)
-        with self._lock:
-            self._language_key = key
-            self._language_mods = mods
-        logger.info("Language hotkey changed to %s", config)
 
     @property
     def is_running(self) -> bool:
@@ -542,55 +456,8 @@ class HotkeyManager:
             self._safe_invoke(callback)
 
     # ------------------------------------------------------------------
-    # pynput callbacks (language-switch hotkey)
-    # ------------------------------------------------------------------
-
-    def _on_pynput_press(self, key) -> None:
-        callback = None
-        with self._lock:
-            if isinstance(key, keyboard.Key) and key in _ALL_PYNPUT_MODIFIERS:
-                self._pressed_modifiers.add(key)
-
-            # Check language-switch hotkey
-            if self._language_key is not None:
-                if (self._key_matches(key, self._language_key)
-                        and self._pynput_mods_match(self._language_mods)):
-                    callback = self._on_language_switch
-            elif self._language_mods:
-                # Modifier-only language hotkey
-                if isinstance(key, keyboard.Key) and key in self._language_mods:
-                    callback = self._on_language_switch
-
-        if callback is not None:
-            logger.info("Language switch hotkey fired")
-            print("[SafeVoice] Language switch")
-            self._safe_invoke(callback)
-
-    def _on_pynput_release(self, key) -> None:
-        with self._lock:
-            if isinstance(key, keyboard.Key) and key in _ALL_PYNPUT_MODIFIERS:
-                self._pressed_modifiers.discard(key)
-
-    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _key_matches(pressed, target) -> bool:
-        if pressed == target:
-            return True
-        if (isinstance(pressed, keyboard.KeyCode)
-                and isinstance(target, keyboard.KeyCode)):
-            p_char = getattr(pressed, "char", None)
-            t_char = getattr(target, "char", None)
-            if p_char and t_char:
-                return p_char.lower() == t_char.lower()
-        return False
-
-    def _pynput_mods_match(self, required: Set[keyboard.Key]) -> bool:
-        if not required:
-            return True
-        return bool(self._pressed_modifiers & required)
 
     def _describe_activate(self) -> str:
         parts = []
@@ -605,20 +472,6 @@ class HotkeyManager:
                     break
             else:
                 parts.append(f"key{self._activate_key_code}")
-        return "+".join(parts) if parts else "None"
-
-    def _describe_language(self) -> str:
-        parts = []
-        for name, mod_keys in _PYNPUT_MOD_MAP.items():
-            if mod_keys & self._language_mods:
-                parts.append(_MOD_SYMBOLS.get(name, name))
-        if self._language_key is not None:
-            key_str = str(self._language_key)
-            if hasattr(self._language_key, "name"):
-                key_str = self._language_key.name.title()
-            elif hasattr(self._language_key, "char") and self._language_key.char:
-                key_str = self._language_key.char.upper()
-            parts.append(key_str)
         return "+".join(parts) if parts else "None"
 
     @staticmethod

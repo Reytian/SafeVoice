@@ -95,7 +95,6 @@ class SafeVoiceApp(rumps.App):
         self._dashboard = DashboardWindow(
             self._settings,
             on_open_settings=lambda: self._settings_window.show(),
-            on_language_change=lambda idx: self._set_language(idx),
         )
         self._llm = LLMCleanup()
 
@@ -113,7 +112,6 @@ class SafeVoiceApp(rumps.App):
         self._hotkey.start(
             on_activate=self._on_hotkey_activate,
             on_deactivate=self._on_hotkey_deactivate,
-            on_language_switch=self._on_language_switch,
         )
 
         # Preload model in background
@@ -161,7 +159,6 @@ class SafeVoiceApp(rumps.App):
 
         # Hotkey info
         hotkey_info = rumps.MenuItem("Hotkey: Left \u2325 (Left Option)", callback=None)
-        lang_hotkey_info = rumps.MenuItem("Switch Language: \u2303 Space (Ctrl+Space)", callback=None)
 
         # Quit
         quit_item = rumps.MenuItem("Quit SafeVoice", callback=self._on_quit)
@@ -176,7 +173,6 @@ class SafeVoiceApp(rumps.App):
             settings_item,
             None,
             hotkey_info,
-            lang_hotkey_info,
             None,
             quit_item,
         ]
@@ -279,13 +275,10 @@ class SafeVoiceApp(rumps.App):
             self._asr.set_language("Auto")
         self._hotkey.set_mode(saved_mode)
 
-        # Apply saved hotkey configurations
+        # Apply saved hotkey configuration
         activate_hk = self._settings.get("activate_hotkey")
         if activate_hk:
             self._hotkey.set_activate_hotkey(activate_hk)
-        language_hk = self._settings.get("language_hotkey")
-        if language_hk:
-            self._hotkey.set_language_hotkey(language_hk)
 
     def _on_setting_changed(self, key, old_value, new_value):
         """Callback fired when any setting changes via the settings window."""
@@ -316,9 +309,6 @@ class SafeVoiceApp(rumps.App):
 
         elif key == "activate_hotkey":
             self._hotkey.set_activate_hotkey(new_value)
-
-        elif key == "language_hotkey":
-            self._hotkey.set_language_hotkey(new_value)
 
     def _get_asr_language(self, languages):
         """Determine the ASR language from the languages setting list."""
@@ -410,11 +400,6 @@ class SafeVoiceApp(rumps.App):
             self._stop_listening_and_transcribe()
         except Exception:
             logger.exception("Error in _on_hotkey_deactivate")
-
-    def _on_language_switch(self):
-        """Called when the user presses the language cycle hotkey."""
-        next_index = (self._language_index + 1) % len(LANGUAGES)
-        self._set_language(next_index)
 
     # -- Recording flow --
 
@@ -570,9 +555,8 @@ def main():
         print("Add and enable your terminal or Python executable.")
         print()
 
-    print("Hotkeys:")
+    print("Hotkey:")
     print("  Left Option       : Start/stop voice input (hold to talk)")
-    print("  Ctrl + Space      : Cycle language")
     print()
     print("Starting SafeVoice...")
 

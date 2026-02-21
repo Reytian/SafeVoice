@@ -45,7 +45,6 @@ _DEFAULTS: Dict[str, Any] = {
     "mode": "push_to_talk",
     "response_speed": "fast",
     "activate_hotkey": {"key": "space", "modifiers": ["alt"]},
-    "language_hotkey": {"key": "space", "modifiers": ["ctrl"]},
     # Usage statistics
     "stats_total_transcriptions": 0,
     "stats_total_words": 0,
