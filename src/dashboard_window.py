@@ -9,7 +9,7 @@ Built with PyObjC (AppKit). All UI mutations are dispatched to the main thread.
 """
 
 import threading
-from typing import Optional, Callable, List
+from typing import Optional, Callable
 
 from AppKit import (
     NSWindow,
@@ -37,7 +37,7 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject, NSSize
 import objc
 
-from .settings_manager import SettingsManager, SUPPORTED_LANGUAGES
+from .settings_manager import SettingsManager
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +100,7 @@ class _DashboardCallbackTarget(NSObject):
 # ---------------------------------------------------------------------------
 
 _WINDOW_WIDTH = 500.0
-_WINDOW_HEIGHT = 450.0
+_WINDOW_HEIGHT = 350.0
 _PADDING = 20.0
 _CARD_HEIGHT = 70.0
 _CARD_SPACING = 12.0
@@ -124,11 +124,9 @@ class DashboardWindow:
         self,
         settings_manager: SettingsManager,
         on_open_settings: Optional[Callable] = None,
-        on_language_change: Optional[Callable[[int], None]] = None,
     ) -> None:
         self._mgr = settings_manager
         self._on_open_settings = on_open_settings
-        self._on_language_change = on_language_change
         self._window: Optional[NSWindow] = None
         self._targets: list = []  # prevent GC of ObjC targets
 
@@ -138,7 +136,6 @@ class DashboardWindow:
         self._time_saved_label: Optional[NSTextField] = None
         self._today_transcriptions_label: Optional[NSTextField] = None
         self._status_label: Optional[NSTextField] = None
-        self._language_buttons: List[NSButton] = []
 
         self._build_window()
 
@@ -152,7 +149,6 @@ class DashboardWindow:
         if self._window is None:
             self._build_window()
         self._refresh_stats()
-        self._refresh_language_selection()
         self._window.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
 
@@ -291,44 +287,6 @@ class DashboardWindow:
 
         cursor_y -= _PADDING + 4
 
-        # -- Quick language selector --
-        cursor_y -= 18
-        lang_header = self._make_label(
-            "Quick Language",
-            NSMakeRect(_PADDING, cursor_y, 200, 18),
-            font=NSFont.boldSystemFontOfSize_(13.0),
-            color=NSColor.labelColor(),
-        )
-        content_view.addSubview_(lang_header)
-
-        cursor_y -= 8
-
-        # Language badge buttons in a scrollable row
-        cursor_y -= 32
-        self._language_buttons = []
-        badge_x = _PADDING
-        badge_width = 50.0
-        badge_spacing = 6.0
-
-        # Show a subset of popular languages that fit in the window
-        for i, lang in enumerate(SUPPORTED_LANGUAGES):
-            if badge_x + badge_width > _WINDOW_WIDTH - _PADDING:
-                break
-            btn = NSButton.alloc().initWithFrame_(
-                NSMakeRect(badge_x, cursor_y, badge_width, 28)
-            )
-            btn.setTitle_(lang["badge"])
-            btn.setBezelStyle_(NSBezelStyleRounded)
-            btn.setFont_(NSFont.systemFontOfSize_(11.0))
-            target = self._make_language_target(i)
-            btn.setTarget_(target)
-            btn.setAction_("invoke")
-            content_view.addSubview_(btn)
-            self._language_buttons.append(btn)
-            badge_x += badge_width + badge_spacing
-
-        cursor_y -= _PADDING + 4
-
         # -- Settings button --
         cursor_y -= 32
         settings_btn = NSButton.alloc().initWithFrame_(
@@ -415,33 +373,9 @@ class DashboardWindow:
                 f"{stats.get('stats_today_transcriptions', 0):,}"
             )
 
-    def _refresh_language_selection(self) -> None:
-        """Highlight the currently selected language badge buttons."""
-        selected_langs = self._mgr.get("languages", ["Auto"])
-        for i, btn in enumerate(self._language_buttons):
-            if i < len(SUPPORTED_LANGUAGES):
-                is_selected = SUPPORTED_LANGUAGES[i]["name"] in selected_langs
-                if is_selected:
-                    btn.setFont_(NSFont.boldSystemFontOfSize_(11.0))
-                else:
-                    btn.setFont_(NSFont.systemFontOfSize_(11.0))
-
     # ------------------------------------------------------------------
     # Action targets
     # ------------------------------------------------------------------
-
-    def _make_language_target(self, index: int):
-        """Create an NSObject target for a language badge button."""
-        def callback():
-            if index < len(SUPPORTED_LANGUAGES):
-                lang = SUPPORTED_LANGUAGES[index]
-                # Dashboard quick-select sets a single language
-                self._mgr.set("languages", [lang["name"]])
-                self._refresh_language_selection()
-
-        target = _DashboardCallbackTarget.alloc().initWithCallback_(callback)
-        self._targets.append(target)
-        return target
 
     def _make_settings_target(self):
         """Create an NSObject target for the settings button."""

@@ -304,7 +304,6 @@ class SettingsWindow:
         self._speed_fast_btn: Optional[NSButton] = None
         self._speed_accurate_btn: Optional[NSButton] = None
         self._activate_hotkey_field: Optional[NSTextField] = None
-        self._language_hotkey_field: Optional[NSTextField] = None
 
         self._build_window()
 
@@ -628,17 +627,6 @@ class SettingsWindow:
         )
         view.addSubview_(activate_container)
 
-        y -= _ROW_HEIGHT + 6
-        view.addSubview_(self._make_label(
-            "Language Switch:",
-            NSMakeRect(_TAB_PADDING, y, _LABEL_WIDTH, _ROW_HEIGHT),
-            font_size=13.0,
-        ))
-        language_container = self._make_hotkey_field(
-            _CONTROL_X, y, "language_hotkey"
-        )
-        view.addSubview_(language_container)
-
         # Instructions
         y -= _ROW_HEIGHT + 20
         instructions = self._make_label(
@@ -753,11 +741,8 @@ class SettingsWindow:
 
         # Hotkeys
         activate = settings.get("activate_hotkey", {})
-        lang_hk = settings.get("language_hotkey", {})
         if self._activate_hotkey_field:
             self._activate_hotkey_field.setStringValue_(_format_hotkey(activate))
-        if self._language_hotkey_field:
-            self._language_hotkey_field.setStringValue_(_format_hotkey(lang_hk))
 
     # ------------------------------------------------------------------
     # Helpers
