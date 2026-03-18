@@ -6,6 +6,8 @@ into clean, formal written text.
 
 import json
 import logging
+import re
+import unicodedata
 import urllib.request
 import urllib.error
 from typing import Optional
@@ -55,6 +57,34 @@ FEW_SHOT = [
         "content": "I was thinking that we should meet on Wednesday at 2 PM to discuss the budget.",
     },
 ]
+
+
+_CJK_RE = re.compile(
+    r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]"
+)
+
+
+def _script_changed(input_text: str, output_text: str) -> bool:
+    """Detect if LLM changed the writing script (i.e. translated).
+
+    Returns True if input is mostly CJK but output is mostly Latin,
+    or vice versa. This catches unwanted translation.
+    """
+    in_cjk = len(_CJK_RE.findall(input_text))
+    out_cjk = len(_CJK_RE.findall(output_text))
+    in_total = max(len(input_text.strip()), 1)
+    out_total = max(len(output_text.strip()), 1)
+
+    in_ratio = in_cjk / in_total
+    out_ratio = out_cjk / out_total
+
+    # If input is >30% CJK but output is <10% CJK → translated to Latin
+    if in_ratio > 0.3 and out_ratio < 0.1:
+        return True
+    # If input is <10% CJK but output is >30% CJK → translated to CJK
+    if in_ratio < 0.1 and out_ratio > 0.3:
+        return True
+    return False
 
 
 class LLMCleanup:
@@ -129,18 +159,10 @@ class LLMCleanup:
             return raw_text
 
         try:
-            # Build user message with optional language context
-            effective_langs = [l for l in (languages or []) if l != "Auto"]
-            if effective_langs:
-                lang_str = ", ".join(effective_langs)
-                user_content = f"[Target language(s): {lang_str}] {raw_text}"
-            else:
-                user_content = raw_text
-
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 *FEW_SHOT,
-                {"role": "user", "content": user_content},
+                {"role": "user", "content": raw_text},
             ]
             body = json.dumps({
                 "model": self._model,
@@ -172,6 +194,13 @@ class LLMCleanup:
                         cleaned = cleaned[:cleaned.find("<think>")].strip()
 
                 if cleaned:
+                    # Guard: reject if LLM changed the script (translated)
+                    if _script_changed(raw_text, cleaned):
+                        logger.warning(
+                            "LLM cleanup rejected (translation detected): %r -> %r",
+                            raw_text, cleaned,
+                        )
+                        return raw_text
                     logger.info("LLM cleanup: %r -> %r", raw_text, cleaned)
                     return cleaned
 
