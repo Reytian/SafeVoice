@@ -458,10 +458,10 @@ class SafeVoiceApp(rumps.App):
                     text, lang = "", "Auto"
                 else:
                     logger.info("Batch transcription on %d samples...", len(full_audio))
-                    full_audio = audio_preprocess.reduce_noise(full_audio)
-                    full_audio = audio_preprocess.normalize_audio(full_audio)
-                    full_audio = audio_preprocess.vad_trim(full_audio)
-                    text, lang = self._asr.transcribe(full_audio)
+                    cleaned = audio_preprocess.reduce_noise(full_audio)
+                    cleaned = audio_preprocess.normalize_audio(cleaned)
+                    cleaned = audio_preprocess.vad_trim(cleaned)
+                    text, lang = self._asr.transcribe(cleaned)
                     logger.info("ASR result: %r (lang=%s)", text, lang)
 
                 # Stop the elapsed timer
