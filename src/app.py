@@ -468,9 +468,22 @@ class SafeVoiceApp(rumps.App):
 
                 if text.strip():
                     self._overlay.update_text(text)
-                    # LLM cleanup disabled — qwen2.5:3b translates instead
-                    # of cleaning. ASR output is used directly.
-                    logger.info("Using ASR output directly (LLM cleanup disabled)")
+                    # LLM cleanup for text polishing
+                    stripped = text.strip()
+                    has_cjk = any('\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff' or '\uac00' <= c <= '\ud7af' for c in stripped)
+                    is_long_enough = len(stripped) >= 4 if has_cjk else len(stripped.split()) >= 3
+                    if self._llm.is_available() and is_long_enough:
+                        self._overlay.set_status("processing")
+                        self._update_status("Cleaning up...")
+                        logger.info("LLM cleanup starting...")
+                        cleaned = self._llm.cleanup(text)
+                        logger.info("LLM result: %r", cleaned)
+                        if cleaned != text:
+                            print(f"[SafeVoice] LLM: {text!r} -> {cleaned!r}")
+                            text = cleaned
+                            self._overlay.update_text(text)
+                    elif not is_long_enough:
+                        logger.info("Skipping LLM cleanup for short text: %r", stripped)
                     # Hide overlay BEFORE paste so it doesn't steal focus
                     time.sleep(0.05)
                     self._overlay.hide()
