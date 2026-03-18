@@ -458,8 +458,7 @@ class SafeVoiceApp(rumps.App):
                     text, lang = "", "Auto"
                 else:
                     logger.info("Batch transcription on %d samples...", len(full_audio))
-                    cleaned = audio_preprocess.reduce_noise(full_audio)
-                    cleaned = audio_preprocess.normalize_audio(cleaned)
+                    cleaned = audio_preprocess.normalize_audio(full_audio)
                     cleaned = audio_preprocess.vad_trim(cleaned)
                     text, lang = self._asr.transcribe(cleaned)
                     logger.info("ASR result: %r (lang=%s)", text, lang)
@@ -469,9 +468,11 @@ class SafeVoiceApp(rumps.App):
 
                 if text.strip():
                     self._overlay.update_text(text)
-                    # LLM cleanup: skip for very short texts (< 3 words)
-                    word_count = len(text.strip().split())
-                    if self._llm.is_available() and word_count >= 3:
+                    # LLM cleanup: skip for very short texts
+                    stripped = text.strip()
+                    has_cjk = any('\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff' or '\uac00' <= c <= '\ud7af' for c in stripped)
+                    is_long_enough = len(stripped) >= 4 if has_cjk else len(stripped.split()) >= 3
+                    if self._llm.is_available() and is_long_enough:
                         self._overlay.set_status("processing")
                         self._update_status("Cleaning up...")
                         logger.info("LLM cleanup starting...")
@@ -482,8 +483,8 @@ class SafeVoiceApp(rumps.App):
                             print(f"[SafeVoice] LLM: {text!r} -> {cleaned!r}")
                             text = cleaned
                             self._overlay.update_text(text)
-                    elif word_count < 3:
-                        logger.info("Skipping LLM cleanup for short text (%d words)", word_count)
+                    elif not is_long_enough:
+                        logger.info("Skipping LLM cleanup for short text: %r", stripped)
                     # Hide overlay BEFORE paste so it doesn't steal focus
                     time.sleep(0.05)
                     self._overlay.hide()
