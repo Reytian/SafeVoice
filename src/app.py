@@ -28,6 +28,7 @@ from .hotkey_manager import HotkeyManager
 from .overlay import FloatingOverlay
 from .settings_manager import SettingsManager, SUPPORTED_LANGUAGES
 from .settings_window import SettingsWindow
+from . import audio_preprocess
 from .dashboard_window import DashboardWindow
 from .llm_cleanup import LLMCleanup
 
@@ -457,6 +458,9 @@ class SafeVoiceApp(rumps.App):
                     text, lang = "", "Auto"
                 else:
                     logger.info("Batch transcription on %d samples...", len(full_audio))
+                    full_audio = audio_preprocess.reduce_noise(full_audio)
+                    full_audio = audio_preprocess.normalize_audio(full_audio)
+                    full_audio = audio_preprocess.vad_trim(full_audio)
                     text, lang = self._asr.transcribe(full_audio)
                     logger.info("ASR result: %r (lang=%s)", text, lang)
 
