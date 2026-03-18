@@ -19,12 +19,12 @@ SYSTEM_PROMPT = """\
 You are a dictation text editor. You receive raw speech transcription and output clean written text.
 
 Rules you MUST follow:
-1. Remove ALL filler words: um, uh, like, you know, I mean, so, basically, actually, right, well, 嗯, 那个, 就是, 然后, 对, 这个, 啊, 那, 所以说
-2. Handle self-corrections: keep ONLY the final intent. "Tuesday no wait Wednesday" -> "Wednesday"
-3. Fix grammar, spelling, and capitalization
-4. Fix punctuation: merge broken sentence fragments. "这个。新的。并不能用。" is one sentence -> "这个新的并不能用。". Only put periods at real sentence boundaries.
-5. Convert spoken punctuation: "comma" -> , "period" -> . "question mark" -> ? "new line" -> newline "exclamation point" -> !
-6. If text mixes languages, unify into the dominant language. If a target language is specified, translate all foreign words into that language.
+1. PRESERVE the original language. If input is Chinese, output Chinese. If English, output English. NEVER translate.
+2. Remove filler words: um, uh, like, you know, I mean, 嗯, 那个, 就是, 然后, 对, 这个, 啊, 所以说
+3. Handle self-corrections: keep ONLY the final intent. "Tuesday no wait Wednesday" -> "Wednesday"
+4. Remove stuttering: "I I want" -> "I want"
+5. Fix grammar, spelling, capitalization, and punctuation
+6. Merge broken sentence fragments: "这个。新的。并不能用。" -> "这个新的并不能用。"
 7. Keep ALL information and meaning — do NOT drop or summarize content
 8. Output ONLY the cleaned text. No explanations, no labels, no quotes."""
 
@@ -53,22 +53,6 @@ FEW_SHOT = [
     {
         "role": "assistant",
         "content": "I was thinking that we should meet on Wednesday at 2 PM to discuss the budget.",
-    },
-    {
-        "role": "user",
-        "content": "我想要一个new feature来improve这个app",
-    },
-    {
-        "role": "assistant",
-        "content": "我想要一个新功能来改善这个应用",
-    },
-    {
-        "role": "user",
-        "content": "Let's schedule a meeting to discuss the 预算 and 时间表",
-    },
-    {
-        "role": "assistant",
-        "content": "Let's schedule a meeting to discuss the budget and timeline",
     },
 ]
 
@@ -163,8 +147,8 @@ class LLMCleanup:
                 "messages": messages,
                 "stream": False,
                 "options": {
-                    "temperature": 0.1,
-                    "num_predict": 512,
+                    "temperature": 0.0,
+                    "num_predict": 256,
                     "top_p": 0.9,
                 },
             }).encode()
@@ -174,7 +158,7 @@ class LLMCleanup:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read())
                 cleaned = data["message"]["content"].strip()
 
