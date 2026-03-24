@@ -1259,8 +1259,8 @@ class SettingsWindow:
         selected_idx = 0
         for model in local_models:
             downloaded = is_asr_model_downloaded(model["id"])
-            status = "downloaded" if downloaded else "not downloaded"
-            title = f"{model['name']} ({status})"
+            status = "\u2713" if downloaded else "\u2717"
+            title = f"{status} {model['name']} \u2014 {model['size']} \u2022 {model['speed']}"
             self._asr_model_popup.addItemWithTitle_(title)
             self._asr_models_ordered.append(model)
             if model["id"] == current_asr:
@@ -1287,6 +1287,55 @@ class SettingsWindow:
         self._asr_model_popup.setTarget_(asr_change_target)
         self._asr_model_popup.setAction_("invoke")
         view.addSubview_(self._asr_model_popup)
+
+        # Delete ASR model button
+        asr_del_btn = NSButton.alloc().initWithFrame_(NSMakeRect(_TAB_PADDING + 340, y, 60, 24))
+        asr_del_btn.setTitle_("Delete")
+        asr_del_btn.setBezelStyle_(1)
+        asr_del_btn.setFont_(NSFont.systemFontOfSize_(11.0))
+        asr_del_btn.setContentTintColor_(NSColor.systemRedColor())
+
+        self._asr_del_status = self._make_label(
+            "", NSMakeRect(_TAB_PADDING + 55, y - 18, 300, 16), font_size=10.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        view.addSubview_(self._asr_del_status)
+
+        def _delete_asr():
+            idx = self._asr_model_popup.indexOfSelectedItem()
+            if idx < 0 or idx >= len(self._asr_models_ordered):
+                return
+            model = self._asr_models_ordered[idx]
+            if model is None or model["engine"].startswith("cloud"):
+                return
+            if not is_asr_model_downloaded(model["id"]):
+                self._asr_del_status.setStringValue_("Not downloaded")
+                return
+            self._asr_del_status.setStringValue_(f"Deleting {model['name']}...")
+            import shutil, threading
+            from pathlib import Path
+            def _do_delete():
+                try:
+                    safe_id = model["id"].replace("/", "--")
+                    cache_dir = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{safe_id}"
+                    if cache_dir.exists():
+                        shutil.rmtree(str(cache_dir))
+                    from AppKit import NSObject as _NSO
+                    class _R(_NSO):
+                        def done_(self_, sender):
+                            self._asr_del_status.setStringValue_(f"\u2713 {model['name']} deleted")
+                    r = _R.alloc().init()
+                    self._hotkey_delegates.append(r)
+                    r.performSelectorOnMainThread_withObject_waitUntilDone_("done:", None, False)
+                except Exception as e:
+                    self._asr_del_status.setStringValue_(f"\u2717 {e}")
+            threading.Thread(target=_do_delete, daemon=True).start()
+
+        asr_del_target = _SettingsCallbackTarget.alloc().initWithCallback_(_delete_asr)
+        self._hotkey_delegates.append(asr_del_target)
+        asr_del_btn.setTarget_(asr_del_target)
+        asr_del_btn.setAction_("invoke")
+        view.addSubview_(asr_del_btn)
         y -= 24
 
         # Description label (updated on selection change)
