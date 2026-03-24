@@ -39,11 +39,11 @@ from AppKit import (
     NSTextView,
     NSPanel,
 )
-from Foundation import NSMakeRect, NSObject, NSSize
+from Foundation import NSMakeRect, NSMakePoint, NSObject, NSSize
 import objc
 
 from .settings_manager import SettingsManager, SUPPORTED_LANGUAGES
-from .llm_backend import OllamaBackend, CLOUD_DEFAULTS, ASR_MODELS, is_asr_model_downloaded
+from .llm_backend import OllamaBackend, CLOUD_DEFAULTS, ASR_MODELS, CLOUD_LLM_MODELS, is_asr_model_downloaded
 
 
 # ---------------------------------------------------------------------------
@@ -1172,10 +1172,14 @@ class SettingsWindow:
 
     def _build_models_tab(self) -> NSView:
         """Build the Models tab with ASR info and local/cloud LLM selection."""
+        from AppKit import NSScrollView as _NSScrollView
+
+        # Use a tall inner view inside a scroll view
+        inner_height = 800.0
         view = NSView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT - 60)
+            NSMakeRect(0, 0, _WINDOW_WIDTH - 20, inner_height)
         )
-        content_height = _WINDOW_HEIGHT - 60
+        content_height = inner_height
         y = content_height - _TAB_PADDING
 
         # --- ASR Model section ---
@@ -1326,17 +1330,22 @@ class SettingsWindow:
         current_provider = self._mgr.get("llm_cloud_provider", "openai")
         self._cloud_provider_popup.selectItemWithTitle_(current_provider.capitalize()
             if current_provider != "openai" else "OpenAI")
+        # Wire provider change to repopulate model dropdown
+        provider_change_target = _SettingsCallbackTarget.alloc().initWithCallback_(
+            self._on_cloud_provider_changed)
+        self._hotkey_delegates.append(provider_change_target)
+        self._cloud_provider_popup.setTarget_(provider_change_target)
+        self._cloud_provider_popup.setAction_("invoke")
         self._cloud_panel.addSubview_(self._cloud_provider_popup)
 
         self._cloud_panel.addSubview_(self._make_label(
             "Model:", NSMakeRect(175, cloud_y, 45, 22), font_size=12.0))
 
-        self._cloud_model_field = NSTextField.alloc().initWithFrame_(
-            NSMakeRect(220, cloud_y, 130, 22))
-        self._cloud_model_field.setFont_(NSFont.systemFontOfSize_(12.0))
-        current_cloud_model = self._mgr.get("llm_cloud_model", "gpt-4o-mini")
-        self._cloud_model_field.setStringValue_(current_cloud_model)
-        self._cloud_panel.addSubview_(self._cloud_model_field)
+        # Cloud model dropdown (populated per provider)
+        self._cloud_model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(220, cloud_y, 130, 24), False)
+        self._populate_cloud_models(current_provider)
+        self._cloud_panel.addSubview_(self._cloud_model_popup)
 
         # API key row
         self._cloud_panel.addSubview_(self._make_label(
@@ -1379,7 +1388,16 @@ class SettingsWindow:
         apply_btn.setAction_("invoke")
         view.addSubview_(apply_btn)
 
-        return view
+        # Wrap in scroll view
+        tab_height = _WINDOW_HEIGHT - 60
+        scroll = _NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, _WINDOW_WIDTH, tab_height)
+        )
+        scroll.setHasVerticalScroller_(True)
+        scroll.setDocumentView_(view)
+        # Scroll to top
+        view.scrollPoint_(NSMakePoint(0, inner_height - tab_height))
+        return scroll
 
     def _make_llm_source_target(self, source_value: str):
         """Create a target for LLM source radio buttons."""
@@ -1408,6 +1426,26 @@ class SettingsWindow:
         if current in models:
             self._local_model_popup.selectItemWithTitle_(current)
 
+    def _populate_cloud_models(self, provider):
+        """Populate cloud model dropdown for the selected provider."""
+        self._cloud_model_popup.removeAllItems()
+        models = CLOUD_LLM_MODELS.get(provider.lower(), [])
+        current_model = self._mgr.get("llm_cloud_model", "")
+        for m in models:
+            self._cloud_model_popup.addItemWithTitle_(f"{m['name']}")
+        # Select current
+        for i, m in enumerate(models):
+            if m["id"] == current_model:
+                self._cloud_model_popup.selectItemAtIndex_(i)
+                break
+
+    def _on_cloud_provider_changed(self):
+        """Handle cloud provider dropdown change — repopulate model list."""
+        title = self._cloud_provider_popup.titleOfSelectedItem()
+        if title:
+            provider = title.lower()
+            self._populate_cloud_models(provider)
+
     def _apply_models_settings(self):
         """Save all Models tab settings and invoke the change callback."""
         # Save selected ASR model
@@ -1430,8 +1468,13 @@ class SettingsWindow:
             if provider == "openai":
                 provider = "openai"  # keep lowercase
             self._mgr.set("llm_cloud_provider", provider)
-            self._mgr.set("llm_cloud_model",
-                          self._cloud_model_field.stringValue().strip())
+            models = CLOUD_LLM_MODELS.get(provider, [])
+            model_idx = self._cloud_model_popup.indexOfSelectedItem()
+            if 0 <= model_idx < len(models):
+                cloud_model = models[model_idx]["id"]
+            else:
+                cloud_model = self._mgr.get("llm_cloud_model", "gpt-4o-mini")
+            self._mgr.set("llm_cloud_model", cloud_model)
             api_key = self._cloud_api_key_field.stringValue().strip()
             self._save_api_key(provider, api_key)
 

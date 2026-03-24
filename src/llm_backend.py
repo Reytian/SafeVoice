@@ -319,7 +319,42 @@ ASR_MODELS = [
         "description": "Balanced Whisper model. Good accuracy for most use cases.",
         "engine": "mlx-whisper",
     },
+    {
+        "id": "openai/whisper-1",
+        "name": "OpenAI Whisper API",
+        "size": "Cloud",
+        "speed": "Fast (1-3s)",
+        "accuracy": "Excellent",
+        "description": "OpenAI's cloud Whisper API. Requires API key. Most accurate.",
+        "engine": "cloud-openai",
+    },
+    {
+        "id": "google/speech-to-text",
+        "name": "Google Speech-to-Text",
+        "size": "Cloud",
+        "speed": "Fast (1-2s)",
+        "accuracy": "Excellent",
+        "description": "Google Cloud speech recognition. Requires API key.",
+        "engine": "cloud-google",
+    },
 ]
+
+CLOUD_LLM_MODELS = {
+    "openai": [
+        {"id": "gpt-4o-mini", "name": "GPT-4o Mini", "description": "Fast, affordable, good quality"},
+        {"id": "gpt-4o", "name": "GPT-4o", "description": "Most capable, higher cost"},
+        {"id": "gpt-4.1-mini", "name": "GPT-4.1 Mini", "description": "Latest mini model"},
+        {"id": "gpt-4.1-nano", "name": "GPT-4.1 Nano", "description": "Fastest, lowest cost"},
+    ],
+    "anthropic": [
+        {"id": "claude-haiku-4-5-20251001", "name": "Claude 4.5 Haiku", "description": "Fast, affordable"},
+        {"id": "claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "description": "Balanced quality/speed"},
+    ],
+    "google": [
+        {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash", "description": "Fast, free tier available"},
+        {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "description": "Latest, best quality"},
+    ],
+}
 
 
 def is_asr_model_downloaded(model_id: str) -> bool:
