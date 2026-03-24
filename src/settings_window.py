@@ -786,62 +786,179 @@ class SettingsWindow:
     # ------------------------------------------------------------------
 
     def _build_vocabulary_tab(self) -> NSView:
-        """Build the Vocabulary tab showing hotwords and snippets."""
+        """Build the Vocabulary tab with interactive add/delete controls."""
         view = NSView.alloc().initWithFrame_(
             NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT - 60)
         )
+        self._vocab_container = view
+        self._populate_vocabulary_view(view)
+        return view
+
+    def _populate_vocabulary_view(self, view) -> None:
+        """Populate (or re-populate) the vocabulary tab contents."""
+        # Clear existing subviews
+        for subview in list(view.subviews()):
+            subview.removeFromSuperview()
+
         content_height = _WINDOW_HEIGHT - 60
         y = content_height - _TAB_PADDING
 
-        # Title
+        # --- Hotwords section ---
         y -= _ROW_HEIGHT
-        title = self._make_section_label("Vocabulary & Snippets", y + 4)
-        view.addSubview_(title)
+        view.addSubview_(self._make_section_label("ASR Hotwords", y + 4))
 
-        # Hotwords section
         y -= 6
-        hw_label = self._make_label(
-            "ASR Hotwords (improve recognition of proper nouns)",
+        hw_desc = self._make_label(
+            "Improve recognition of proper nouns and technical terms",
             NSMakeRect(_TAB_PADDING, y - 12, _WINDOW_WIDTH - 2 * _TAB_PADDING, 16),
             font_size=11.0,
             color=NSColor.secondaryLabelColor(),
         )
-        view.addSubview_(hw_label)
+        view.addSubview_(hw_desc)
         y -= 30
 
         if self._vocabulary_manager:
             for word in self._vocabulary_manager.get_hotwords():
+                # Delete button
+                del_btn = NSButton.alloc().initWithFrame_(
+                    NSMakeRect(_TAB_PADDING, y, 24, 20)
+                )
+                del_btn.setTitle_("\u00d7")
+                del_btn.setBezelStyle_(NSBezelStyleRounded)
+                del_btn.setFont_(NSFont.systemFontOfSize_(12.0))
+                del_target = self._make_vocab_delete_target("hotword", word)
+                del_btn.setTarget_(del_target)
+                del_btn.setAction_("invoke")
+                view.addSubview_(del_btn)
+
                 w_label = self._make_label(
                     word,
-                    NSMakeRect(_TAB_PADDING + 10, y, 300, 18),
+                    NSMakeRect(_TAB_PADDING + 30, y, 300, 20),
                     font_size=12.0,
                 )
                 view.addSubview_(w_label)
-                y -= 22
+                y -= 24
 
-        y -= 10
+        # Add hotword row: text field + [Add] button
+        y -= 4
+        self._hw_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING, y, 280, 24)
+        )
+        self._hw_field.setFont_(NSFont.systemFontOfSize_(12.0))
+        self._hw_field.setPlaceholderString_("New hotword...")
+        view.addSubview_(self._hw_field)
 
-        # Snippets section
-        sn_label = self._make_label(
-            "Snippets (auto-replace phrases)",
-            NSMakeRect(_TAB_PADDING, y, _WINDOW_WIDTH - 2 * _TAB_PADDING, 16),
+        hw_add_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING + 286, y, 60, 24)
+        )
+        hw_add_btn.setTitle_("Add")
+        hw_add_btn.setBezelStyle_(NSBezelStyleRounded)
+        hw_add_btn.setFont_(NSFont.systemFontOfSize_(12.0))
+        hw_add_target = self._make_vocab_add_target("hotword")
+        hw_add_btn.setTarget_(hw_add_target)
+        hw_add_btn.setAction_("invoke")
+        view.addSubview_(hw_add_btn)
+        y -= 36
+
+        # --- Snippets section ---
+        y -= 6
+        view.addSubview_(self._make_section_label("Snippets", y + 4))
+
+        y -= 6
+        sn_desc = self._make_label(
+            "Auto-replace phrases after transcription",
+            NSMakeRect(_TAB_PADDING, y - 12, _WINDOW_WIDTH - 2 * _TAB_PADDING, 16),
             font_size=11.0,
             color=NSColor.secondaryLabelColor(),
         )
-        view.addSubview_(sn_label)
-        y -= 25
+        view.addSubview_(sn_desc)
+        y -= 30
 
         if self._vocabulary_manager:
             for trigger, replacement in self._vocabulary_manager.get_snippets().items():
+                # Delete button
+                del_btn = NSButton.alloc().initWithFrame_(
+                    NSMakeRect(_TAB_PADDING, y, 24, 20)
+                )
+                del_btn.setTitle_("\u00d7")
+                del_btn.setBezelStyle_(NSBezelStyleRounded)
+                del_btn.setFont_(NSFont.systemFontOfSize_(12.0))
+                del_target = self._make_vocab_delete_target("snippet", trigger)
+                del_btn.setTarget_(del_target)
+                del_btn.setAction_("invoke")
+                view.addSubview_(del_btn)
+
                 s_label = self._make_label(
                     f'"{trigger}" \u2192 "{replacement}"',
-                    NSMakeRect(_TAB_PADDING + 10, y, _WINDOW_WIDTH - 2 * _TAB_PADDING - 10, 18),
+                    NSMakeRect(_TAB_PADDING + 30, y, _WINDOW_WIDTH - 2 * _TAB_PADDING - 40, 20),
                     font_size=12.0,
                 )
                 view.addSubview_(s_label)
-                y -= 22
+                y -= 24
 
-        return view
+        # Add snippet row: trigger field + replacement field + [Add] button
+        y -= 4
+        self._sn_trigger_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING, y, 140, 24)
+        )
+        self._sn_trigger_field.setFont_(NSFont.systemFontOfSize_(12.0))
+        self._sn_trigger_field.setPlaceholderString_("Trigger...")
+        view.addSubview_(self._sn_trigger_field)
+
+        self._sn_replacement_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING + 146, y, 194, 24)
+        )
+        self._sn_replacement_field.setFont_(NSFont.systemFontOfSize_(12.0))
+        self._sn_replacement_field.setPlaceholderString_("Replacement...")
+        view.addSubview_(self._sn_replacement_field)
+
+        sn_add_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING + 346, y, 60, 24)
+        )
+        sn_add_btn.setTitle_("Add")
+        sn_add_btn.setBezelStyle_(NSBezelStyleRounded)
+        sn_add_btn.setFont_(NSFont.systemFontOfSize_(12.0))
+        sn_add_target = self._make_vocab_add_target("snippet")
+        sn_add_btn.setTarget_(sn_add_target)
+        sn_add_btn.setAction_("invoke")
+        view.addSubview_(sn_add_btn)
+
+    def _refresh_vocabulary_tab(self) -> None:
+        """Re-populate the vocabulary tab after data changes."""
+        if hasattr(self, '_vocab_container') and self._vocab_container:
+            self._populate_vocabulary_view(self._vocab_container)
+
+    def _make_vocab_delete_target(self, kind: str, key: str):
+        """Create a target that deletes a hotword or snippet and refreshes."""
+        def _delete():
+            if kind == "hotword":
+                self._vocabulary_manager.remove_hotword(key)
+            else:
+                self._vocabulary_manager.remove_snippet(key)
+            self._refresh_vocabulary_tab()
+        target = _SettingsCallbackTarget.alloc().initWithCallback_(_delete)
+        self._hotkey_delegates.append(target)
+        return target
+
+    def _make_vocab_add_target(self, kind: str):
+        """Create a target that adds a hotword or snippet and refreshes."""
+        def _add():
+            if kind == "hotword":
+                word = self._hw_field.stringValue().strip()
+                if word:
+                    self._vocabulary_manager.add_hotword(word)
+                    self._hw_field.setStringValue_("")
+            else:
+                trigger = self._sn_trigger_field.stringValue().strip()
+                replacement = self._sn_replacement_field.stringValue().strip()
+                if trigger and replacement:
+                    self._vocabulary_manager.add_snippet(trigger, replacement)
+                    self._sn_trigger_field.setStringValue_("")
+                    self._sn_replacement_field.setStringValue_("")
+            self._refresh_vocabulary_tab()
+        target = _SettingsCallbackTarget.alloc().initWithCallback_(_add)
+        self._hotkey_delegates.append(target)
+        return target
 
     # ------------------------------------------------------------------
     # Sync UI state from SettingsManager
