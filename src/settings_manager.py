@@ -60,6 +60,7 @@ _DEFAULTS: Dict[str, Any] = {
     "llm_cloud_provider": "openai",
     "llm_cloud_model": "gpt-4o-mini",
     "translation_language": "English",
+    "asr_model": "Qwen/Qwen3-ASR-0.6B",
 }
 
 # Type alias for a change callback: (key, old_value, new_value) -> None.
