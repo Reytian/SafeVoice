@@ -258,22 +258,40 @@ class FloatingOverlay:
         self._current_status = status
         self._apply_status()
 
-        # Update state badge
+        # State badge: shift text right when badge is visible to avoid overlap
         if hasattr(self, '_badge_label') and self._badge_label is not None:
+            badge_width = 28  # badge width + spacing
             if status == "processing":
                 self._badge_label.setStringValue_("AI")
                 self._badge_label.setBackgroundColor_(
                     NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
                 )
                 self._badge_label.setHidden_(False)
+                if self._text_label is not None:
+                    f = self._text_label.frame()
+                    self._text_label.setFrame_(NSMakeRect(
+                        self._text_x_base + badge_width, f.origin.y,
+                        f.size.width - badge_width, f.size.height
+                    ))
             elif status == "done":
                 self._badge_label.setStringValue_("OK")
                 self._badge_label.setBackgroundColor_(
                     NSColor.colorWithCalibratedRed_green_blue_alpha_(0.3, 0.85, 0.4, 1.0)
                 )
                 self._badge_label.setHidden_(False)
+                if self._text_label is not None:
+                    f = self._text_label.frame()
+                    self._text_label.setFrame_(NSMakeRect(
+                        self._text_x_base + badge_width, f.origin.y,
+                        f.size.width - badge_width, f.size.height
+                    ))
             else:
                 self._badge_label.setHidden_(True)
+                if self._text_label is not None:
+                    f = self._text_label.frame()
+                    self._text_label.setFrame_(NSMakeRect(
+                        self._text_x_base, f.origin.y, f.size.width, f.size.height
+                    ))
 
     @_ensure_main_thread
     def set_language(self, language: str) -> None:
@@ -431,6 +449,7 @@ class FloatingOverlay:
         # Don't advance x_cursor — badge overlaps text area when shown, text shifts isn't needed
 
         # --- Transcription text ---
+        self._text_x_base = x_cursor  # Save for badge shift logic
         text_width = _PANEL_MIN_WIDTH - x_cursor - _HORIZONTAL_PADDING
         text_y = (_PANEL_HEIGHT - 20.0) / 2.0
         self._text_label = self._make_label(
