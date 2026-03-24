@@ -279,3 +279,60 @@ def get_backend(
             api_key=cloud_api_key,
         )
     return OllamaBackend(model=local_model)
+
+
+# ASR Model Catalog
+ASR_MODELS = [
+    {
+        "id": "Qwen/Qwen3-ASR-0.6B",
+        "name": "Qwen3 ASR 0.6B",
+        "size": "~1.2 GB",
+        "speed": "Fast (~1-2s)",
+        "accuracy": "Good",
+        "description": "Default model. Fast and accurate for most languages.",
+        "engine": "mlx-qwen3-asr",
+    },
+    {
+        "id": "mlx-community/whisper-large-v3-turbo",
+        "name": "Whisper Large V3 Turbo",
+        "size": "~1.6 GB",
+        "speed": "Fast (~2-3s)",
+        "accuracy": "Excellent",
+        "description": "OpenAI Whisper optimized for MLX. Best accuracy, supports 99 languages.",
+        "engine": "mlx-whisper",
+    },
+    {
+        "id": "mlx-community/whisper-small",
+        "name": "Whisper Small",
+        "size": "~500 MB",
+        "speed": "Very fast (<1s)",
+        "accuracy": "Good",
+        "description": "Compact Whisper model. Fast but less accurate than larger variants.",
+        "engine": "mlx-whisper",
+    },
+    {
+        "id": "mlx-community/whisper-medium",
+        "name": "Whisper Medium",
+        "size": "~1.5 GB",
+        "speed": "Moderate (~2-4s)",
+        "accuracy": "Very good",
+        "description": "Balanced Whisper model. Good accuracy for most use cases.",
+        "engine": "mlx-whisper",
+    },
+]
+
+
+def is_asr_model_downloaded(model_id: str) -> bool:
+    """Check if an ASR model is cached locally."""
+    from pathlib import Path
+    safe_id = model_id.replace("/", "--")
+    cache_dir = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{safe_id}" / "snapshots"
+    if cache_dir.is_dir():
+        snapshots = list(cache_dir.iterdir())
+        if snapshots:
+            # Check if snapshot has actual model files (not just metadata)
+            for snap in snapshots:
+                safetensors = list(snap.glob("*.safetensors"))
+                if safetensors:
+                    return True
+    return False

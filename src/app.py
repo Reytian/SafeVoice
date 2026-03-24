@@ -93,7 +93,8 @@ class SafeVoiceApp(rumps.App):
 
         # Components
         self._audio = AudioCapture(sample_rate=16000, channels=1, blocksize=1024)
-        self._asr = ASREngine()
+        asr_model = self._settings.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
+        self._asr = ASREngine(model_id=asr_model)
         self._injector = TextInjector()
         self._hotkey = HotkeyManager()
         self._overlay = FloatingOverlay()

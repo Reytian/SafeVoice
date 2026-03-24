@@ -87,8 +87,10 @@ class ASREngine:
         "tr": "Turkish",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, model_id: str = None) -> None:
         self._session = None
+        if model_id:
+            self.MODEL_ID = model_id
         self._streaming_state = None
         self._language: str = "Auto"
 

@@ -43,7 +43,7 @@ from Foundation import NSMakeRect, NSObject, NSSize
 import objc
 
 from .settings_manager import SettingsManager, SUPPORTED_LANGUAGES
-from .llm_backend import OllamaBackend, CLOUD_DEFAULTS
+from .llm_backend import OllamaBackend, CLOUD_DEFAULTS, ASR_MODELS, is_asr_model_downloaded
 
 
 # ---------------------------------------------------------------------------
@@ -1178,18 +1178,63 @@ class SettingsWindow:
         content_height = _WINDOW_HEIGHT - 60
         y = content_height - _TAB_PADDING
 
-        # --- ASR section ---
+        # --- ASR Model section ---
         y -= _ROW_HEIGHT
         view.addSubview_(self._make_section_label("Speech Recognition (ASR)", y + 4))
-        y -= _ROW_HEIGHT
-        asr_info = self._make_label(
-            "Qwen3-ASR-0.6B \u2014 ~1.2 GB \u2014 100% on-device",
-            NSMakeRect(_TAB_PADDING + 10, y, _WINDOW_WIDTH - 2 * _TAB_PADDING, 20),
-            font_size=12.0,
+        y -= 8
+
+        info_label = self._make_label(
+            "All ASR models run 100% on-device. Your voice never leaves your Mac.",
+            NSMakeRect(_TAB_PADDING, y, 320, 16), font_size=10.0,
             color=NSColor.secondaryLabelColor(),
         )
-        view.addSubview_(asr_info)
-        y -= 20
+        view.addSubview_(info_label)
+        y -= 24
+
+        current_asr = self._mgr.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
+        self._asr_radio_buttons = []
+
+        for model in ASR_MODELS:
+            is_current = model["id"] == current_asr
+            downloaded = is_asr_model_downloaded(model["id"])
+
+            # Radio button for selection
+            radio = NSButton.alloc().initWithFrame_(NSMakeRect(_TAB_PADDING, y, 20, 20))
+            radio.setButtonType_(NSButtonTypeRadio)
+            radio.setTitle_("")
+            radio.setState_(1 if is_current else 0)
+            self._asr_radio_buttons.append((radio, model["id"]))
+            view.addSubview_(radio)
+
+            # Model name + status
+            status = " (active)" if is_current else (" (downloaded)" if downloaded else " (not downloaded)")
+            name_label = self._make_label(
+                f"{model['name']}{status}",
+                NSMakeRect(_TAB_PADDING + 24, y, 260, 18), font_size=12.0,
+            )
+            if is_current:
+                name_label.setFont_(NSFont.boldSystemFontOfSize_(12.0))
+            view.addSubview_(name_label)
+            y -= 20
+
+            # Details line
+            detail = f"{model['size']}  \u2022  {model['speed']}  \u2022  {model['accuracy']}"
+            detail_label = self._make_label(
+                detail,
+                NSMakeRect(_TAB_PADDING + 24, y, 280, 14), font_size=10.0,
+                color=NSColor.secondaryLabelColor(),
+            )
+            view.addSubview_(detail_label)
+            y -= 16
+
+            # Description
+            desc_label = self._make_label(
+                model["description"],
+                NSMakeRect(_TAB_PADDING + 24, y, 280, 14), font_size=10.0,
+                color=NSColor.tertiaryLabelColor(),
+            )
+            view.addSubview_(desc_label)
+            y -= 24
 
         # --- LLM section ---
         y -= _ROW_HEIGHT
@@ -1365,6 +1410,13 @@ class SettingsWindow:
 
     def _apply_models_settings(self):
         """Save all Models tab settings and invoke the change callback."""
+        # Save selected ASR model
+        if hasattr(self, '_asr_radio_buttons'):
+            for radio, model_id in self._asr_radio_buttons:
+                if radio.state() == NSOnState:
+                    self._mgr.set("asr_model", model_id)
+                    break
+
         is_local = self._llm_local_btn.state() == NSOnState
         source = "local" if is_local else "cloud"
         self._mgr.set("llm_source", source)
