@@ -1,10 +1,13 @@
 """
 Native macOS settings window for SafeVoice.
 
-Provides a preferences GUI built with PyObjC (AppKit) featuring three tabs:
+Provides a preferences GUI built with PyObjC (AppKit) featuring six tabs:
   - General: mode selection, response speed
   - Languages: scrollable language list with checkmarks
-  - Advanced: hotkey recorder fields
+  - Hotkeys: hotkey recorder fields
+  - Modes: processing modes with edit/delete/add
+  - Vocabulary: ASR hotwords and text snippets
+  - Models: ASR and LLM model selection
 
 The window is non-modal and follows macOS Human Interface Guidelines.
 All UI mutations are dispatched to the main thread.
@@ -390,9 +393,9 @@ class SettingsWindow:
         lang_item.setView_(self._build_languages_tab())
         tab_view.addTabViewItem_(lang_item)
 
-        # Advanced tab
-        advanced_item = NSTabViewItem.alloc().initWithIdentifier_("advanced")
-        advanced_item.setLabel_("Advanced")
+        # Hotkeys tab
+        advanced_item = NSTabViewItem.alloc().initWithIdentifier_("hotkeys")
+        advanced_item.setLabel_("Hotkeys")
         advanced_item.setView_(self._build_advanced_tab())
         tab_view.addTabViewItem_(advanced_item)
 
