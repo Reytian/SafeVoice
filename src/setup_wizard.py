@@ -15,7 +15,7 @@ from Foundation import NSTimer
 logger = logging.getLogger(__name__)
 
 
-STEPS = ["Welcome", "Demo", "Permissions", "Model", "Test", "Ready"]
+STEPS = ["Welcome", "Demo", "Permissions", "Model", "Tone", "Settings", "Test", "Ready"]
 
 
 class _WizardButtonTarget(NSObject):
@@ -34,7 +34,7 @@ class _WizardButtonTarget(NSObject):
 
 
 class SetupWizard:
-    """6-step onboarding wizard for first-time users."""
+    """8-step onboarding wizard for first-time users."""
 
     def __init__(self, app_ref, on_complete=None):
         self._app = app_ref
@@ -236,6 +236,149 @@ class SetupWizard:
             self._download_asr()
         if ollama_running and not llm_ready and hasattr(self, '_llm_status'):
             self._download_llm()
+
+    def _render_tone(self):
+        self._label("Text Cleanup Style", 22, bold=True, y=330, center=True, height=30)
+        self._label(
+            "SafeVoice can clean up your speech using AI.\nChoose a style that matches how you want your text to sound.",
+            13, y=275, center=True, width=420, height=40,
+        )
+
+        # Style preset dropdown
+        from AppKit import NSPopUpButton, NSScrollView, NSTextView
+        from .modes import STYLE_PRESETS
+
+        self._label("Style:", 12, y=235, x=30, bold=True)
+        self._tone_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(80, 235, 180, 24), False)
+        for preset_name in STYLE_PRESETS:
+            self._tone_popup.addItemWithTitle_(preset_name.title())
+        # Default to Professional
+        self._tone_popup.selectItemWithTitle_("Professional")
+        self._content_view.addSubview_(self._tone_popup)
+
+        # Prompt preview (editable text view)
+        self._label("Prompt:", 12, y=205, x=30, bold=True)
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(30, 130, 460, 70))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(1)
+        self._tone_text_view = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, 440, 70))
+        self._tone_text_view.setFont_(NSFont.systemFontOfSize_(11.0))
+        self._tone_text_view.setString_(STYLE_PRESETS.get("professional", ""))
+        scroll.setDocumentView_(self._tone_text_view)
+        self._content_view.addSubview_(scroll)
+
+        # Preset change fills text view
+        def on_preset_change():
+            selected = self._tone_popup.titleOfSelectedItem().lower()
+            if selected in STYLE_PRESETS:
+                self._tone_text_view.setString_(STYLE_PRESETS[selected])
+
+        from AppKit import NSObject as _NSO
+        import objc as _objc
+        class _PresetTarget(_NSO):
+            def invoke_(self_, sender):
+                on_preset_change()
+        preset_target = _PresetTarget.alloc().init()
+        self._targets.add(preset_target)
+        self._tone_popup.setTarget_(preset_target)
+        self._tone_popup.setAction_(_objc.selector(preset_target.invoke_, signature=b"v@:@"))
+
+        # Test area
+        self._label("Test it:", 12, y=108, x=30, bold=True)
+        self._tone_test_input = NSTextField.alloc().initWithFrame_(NSMakeRect(30, 85, 340, 22))
+        self._tone_test_input.setFont_(NSFont.systemFontOfSize_(11.0))
+        self._tone_test_input.setStringValue_("um so like I was thinking we should you know meet on Tuesday")
+        self._content_view.addSubview_(self._tone_test_input)
+
+        test_btn = self._button("Test", y=85, x=380, width=60, action=self._test_tone)
+
+        # Result label
+        self._tone_result = self._label("", 12, y=55, x=30, width=460, height=24)
+        self._tone_result.setTextColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.5, 0.8, 1.0)
+        )
+
+        # Navigation
+        self._button("Back", y=15, x=140, action=self._prev_step, secondary=True)
+        self._button("Next", y=15, x=280, action=self._save_tone_and_next)
+
+    def _test_tone(self):
+        """Test the current tone/prompt with sample text via LLM."""
+        import threading
+
+        prompt_template = self._tone_text_view.string().strip()
+        sample_text = self._tone_test_input.stringValue().strip()
+        if not prompt_template or not sample_text:
+            self._tone_result.setStringValue_("Enter sample text and press Test")
+            return
+
+        custom_prompt = prompt_template.replace("{text}", sample_text)
+        self._tone_result.setStringValue_("Processing...")
+        self._tone_result.setTextColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
+        )
+
+        def _run():
+            result = self._app._llm.cleanup(sample_text, custom_prompt=custom_prompt)
+
+            from AppKit import NSObject as _NSO
+            import objc as _objc
+            class _ResultUpdater(_NSO):
+                def update_(self_, sender):
+                    self._tone_result.setStringValue_(f"Result: {result}")
+                    self._tone_result.setTextColor_(
+                        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.5, 0.8, 1.0)
+                    )
+            u = _ResultUpdater.alloc().init()
+            self._targets.add(u)
+            u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _save_tone_and_next(self):
+        """Save the selected tone as the Quick mode's prompt template and move to next step."""
+        from .modes import Mode
+
+        prompt = self._tone_text_view.string().strip()
+        if prompt:
+            # Update the Quick mode or Formal Writing mode with the chosen prompt
+            quick = self._app._modes.get("Quick")
+            if quick:
+                quick.prompt_template = prompt
+                self._app._modes._save()
+
+        self._next_step()
+
+    def _render_settings(self):
+        self._label("Customize in Settings", 22, bold=True, y=310, center=True, height=30)
+
+        self._label(
+            "You can customize everything from the menu bar:",
+            13, y=265, center=True, width=400,
+        )
+
+        items = [
+            ("Modes", "Add custom processing modes with their own hotkeys and prompts"),
+            ("Vocabulary", "Add hotwords for better recognition and text shortcuts"),
+            ("Models", "Switch between local and cloud AI models"),
+            ("Languages", "Select which languages to recognize"),
+            ("General", "Change input mode and response speed"),
+        ]
+
+        y = 230
+        for title, desc in items:
+            self._label(title, 13, bold=True, y=y, x=50, width=100)
+            self._label(desc, 11, y=y, x=150, width=330)
+            y -= 28
+
+        self._label(
+            "Click the SafeVoice icon in your menu bar \u2192 Settings",
+            12, y=y - 10, center=True, width=400,
+        )
+
+        self._button("Back", y=15, x=140, action=self._prev_step, secondary=True)
+        self._button("Next", y=15, x=280, action=self._next_step)
 
     def _render_test(self):
         self._label("Try it out!", 22, bold=True, y=320, center=True, height=30)
