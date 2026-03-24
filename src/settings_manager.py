@@ -54,6 +54,12 @@ _DEFAULTS: Dict[str, Any] = {
     "stats_today_words": 0,
     "stats_last_date": "",
     "first_run": True,
+    # LLM backend settings
+    "llm_source": "local",
+    "llm_local_model": "qwen2.5:3b",
+    "llm_cloud_provider": "openai",
+    "llm_cloud_model": "gpt-4o-mini",
+    "translation_language": "English",
 }
 
 # Type alias for a change callback: (key, old_value, new_value) -> None.
