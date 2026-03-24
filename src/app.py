@@ -110,6 +110,8 @@ class SafeVoiceApp(rumps.App):
         self._audio_chunks = []
         self._audio_lock = threading.Lock()
 
+        self._speculative_interval = 3.0  # seconds between speculative attempts
+
         # Apply saved settings before building menu
         self._apply_saved_settings()
 
@@ -436,6 +438,10 @@ class SafeVoiceApp(rumps.App):
         # Start audio capture with callback (batch mode — no streaming ASR)
         self._audio.start(callback=self._on_audio_chunk)
 
+        # Start speculative LLM if using a custom mode
+        if self._active_mode.prompt_template and self._llm.is_available():
+            self._start_speculative_timer()
+
         print("[SafeVoice] Listening...")
 
     def _on_audio_chunk(self, chunk):
@@ -449,6 +455,7 @@ class SafeVoiceApp(rumps.App):
 
     def _stop_listening_and_transcribe(self):
         """Stop recording and run final transcription."""
+        self._stop_speculative_timer()
         self._set_state(STATE_TRANSCRIBING)
         self._update_status("Transcribing...")
         self._overlay.set_status("processing")
@@ -502,9 +509,15 @@ class SafeVoiceApp(rumps.App):
                         self._update_status(f"{self._active_mode.name}...")
                         prompt = self._active_mode.render_prompt(stripped)
                         logger.info("Mode '%s' LLM starting...", self._active_mode.name)
-                        cleaned = self._llm.cleanup(text, custom_prompt=prompt)
-                        if cleaned != text:
-                            text = cleaned
+                        # Check speculative cache first
+                        cached = self._llm.get_speculative_result(stripped)
+                        if cached:
+                            logger.info("Using speculative result")
+                            text = cached
+                        else:
+                            cleaned = self._llm.cleanup(text, custom_prompt=prompt)
+                            if cleaned != text:
+                                text = cleaned
                         self._overlay.update_text(text)
                         logger.info("Mode result: %r", text)
                     elif self._active_mode.prompt_template is None and self._llm.is_available() and is_long_enough:
@@ -551,6 +564,36 @@ class SafeVoiceApp(rumps.App):
 
         t = threading.Thread(target=transcribe, daemon=True)
         t.start()
+
+    def _start_speculative_timer(self):
+        """Periodically run ASR on captured audio and speculatively send to LLM."""
+        self._speculative_timer_stop = threading.Event()
+
+        def _speculate():
+            while not self._speculative_timer_stop.wait(self._speculative_interval):
+                if self._state != STATE_LISTENING:
+                    break
+                with self._audio_lock:
+                    if not self._audio_chunks:
+                        continue
+                    audio_so_far = np.concatenate(self._audio_chunks)
+                if len(audio_so_far) < 16000:  # less than 1 second
+                    continue
+                try:
+                    cleaned = audio_preprocess.normalize_audio(audio_so_far)
+                    text, _ = self._asr.transcribe(cleaned)
+                    if text.strip():
+                        text = self._vocabulary.apply_snippets(text)
+                        prompt = self._active_mode.render_prompt(text.strip())
+                        self._llm.speculative_cleanup(text.strip(), custom_prompt=prompt)
+                except Exception as e:
+                    logger.debug("Speculative ASR failed: %s", e)
+
+        threading.Thread(target=_speculate, daemon=True).start()
+
+    def _stop_speculative_timer(self):
+        if hasattr(self, '_speculative_timer_stop'):
+            self._speculative_timer_stop.set()
 
     def _inject_text(self, text):
         """Inject transcribed text into the active application."""
