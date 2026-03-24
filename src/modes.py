@@ -4,6 +4,25 @@ import os
 import threading
 from dataclasses import dataclass, asdict
 
+STYLE_PRESETS = {
+    "minimal": (
+        "Fix only obvious typos and punctuation. Keep the original wording. "
+        "Do NOT translate. Output only the cleaned text:\n\n{text}"
+    ),
+    "professional": (
+        "Clean up this dictated text. Fix grammar, punctuation, and make it professional. "
+        "Do NOT translate. Keep the same language. Output only the cleaned text:\n\n{text}"
+    ),
+    "casual": (
+        "Clean up this dictated text lightly. Keep it conversational and natural. "
+        "Fix obvious errors only. Do NOT translate. Output only the cleaned text:\n\n{text}"
+    ),
+    "verbatim": (
+        "Output the text exactly as spoken, only fixing punctuation and capitalization. "
+        "Do NOT rephrase, summarize, or translate:\n\n{text}"
+    ),
+}
+
 
 @dataclass
 class Mode:
@@ -12,11 +31,15 @@ class Mode:
     hotkey: dict | None = None
     builtin: bool = False
     enabled: bool = True
+    translation_language: str | None = None
 
     def render_prompt(self, text: str) -> str:
         if self.prompt_template is None:
             return text
-        return self.prompt_template.replace("{text}", text)
+        result = self.prompt_template.replace("{text}", text)
+        if self.translation_language:
+            result = result.replace("{language}", self.translation_language)
+        return result
 
 
 DEFAULT_MODES = [
