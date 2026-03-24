@@ -33,6 +33,7 @@ from .dashboard_window import DashboardWindow
 from .llm_cleanup import LLMCleanup
 from .history import HistoryStore
 from .vocabulary import VocabularyManager
+from .modes import ModeManager
 
 
 # Language definitions -- "Auto" first so it is the default.
@@ -102,6 +103,8 @@ class SafeVoiceApp(rumps.App):
         self._llm = LLMCleanup()
         self._history = HistoryStore()
         self._vocabulary = VocabularyManager()
+        self._modes = ModeManager()
+        self._active_mode = self._modes.get("Quick")
 
         # Audio buffer for batch transcription
         self._audio_chunks = []
@@ -156,6 +159,17 @@ class SafeVoiceApp(rumps.App):
         self._mode_menu.add(self._ptt_item)
         self._mode_menu.add(self._toggle_item)
 
+        # Processing modes submenu
+        self._modes_menu = rumps.MenuItem("Processing Mode")
+        for mode in self._modes.get_all():
+            hotkey_str = ""
+            if mode.hotkey:
+                mods = "+".join(m.title() for m in mode.hotkey.get("modifiers", []))
+                key = mode.hotkey.get("key", "").title()
+                hotkey_str = f" ({mods}+{key})" if mods else f" ({key})"
+            item = rumps.MenuItem(f"{mode.name}{hotkey_str}")
+            self._modes_menu[item.title] = item
+
         # Dashboard
         dashboard_item = rumps.MenuItem("Dashboard...", callback=self._open_dashboard)
 
@@ -173,6 +187,7 @@ class SafeVoiceApp(rumps.App):
             None,
             self._lang_menu,
             self._mode_menu,
+            self._modes_menu,
             None,
             dashboard_item,
             settings_item,
@@ -475,12 +490,25 @@ class SafeVoiceApp(rumps.App):
 
                 if text.strip():
                     self._overlay.update_text(text)
-                    # LLM cleanup for text polishing
+                    # LLM processing (mode-aware)
                     stripped = text.strip()
                     raw_for_history = stripped
                     has_cjk = any('\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff' or '\uac00' <= c <= '\ud7af' for c in stripped)
                     is_long_enough = len(stripped) >= 4 if has_cjk else len(stripped.split()) >= 3
-                    if self._llm.is_available() and is_long_enough:
+
+                    if self._active_mode.prompt_template and self._llm.is_available() and is_long_enough:
+                        # Custom mode: use mode's LLM prompt
+                        self._overlay.set_status("processing")
+                        self._update_status(f"{self._active_mode.name}...")
+                        prompt = self._active_mode.render_prompt(stripped)
+                        logger.info("Mode '%s' LLM starting...", self._active_mode.name)
+                        cleaned = self._llm.cleanup(text, custom_prompt=prompt)
+                        if cleaned != text:
+                            text = cleaned
+                        self._overlay.update_text(text)
+                        logger.info("Mode result: %r", text)
+                    elif self._active_mode.prompt_template is None and self._llm.is_available() and is_long_enough:
+                        # Quick mode: default cleanup
                         self._overlay.set_status("processing")
                         self._update_status("Cleaning up...")
                         logger.info("LLM cleanup starting...")
@@ -491,7 +519,7 @@ class SafeVoiceApp(rumps.App):
                             text = cleaned
                             self._overlay.update_text(text)
                     elif not is_long_enough:
-                        logger.info("Skipping LLM cleanup for short text: %r", stripped)
+                        logger.info("Skipping LLM for short text: %r", stripped)
                     # Hide overlay BEFORE paste so it doesn't steal focus
                     time.sleep(0.05)
                     self._overlay.hide()
@@ -502,7 +530,7 @@ class SafeVoiceApp(rumps.App):
                     self._history.add(
                         final_text=text,
                         raw_text=raw_for_history,
-                        mode="quick",
+                        mode=self._active_mode.name,
                         duration=elapsed,
                         language=self._settings.get("languages", ["Auto"])[0],
                     )
