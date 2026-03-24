@@ -32,6 +32,7 @@ from . import audio_preprocess
 from .dashboard_window import DashboardWindow
 from .llm_cleanup import LLMCleanup
 from .history import HistoryStore
+from .vocabulary import VocabularyManager
 
 
 # Language definitions -- "Auto" first so it is the default.
@@ -100,6 +101,7 @@ class SafeVoiceApp(rumps.App):
         )
         self._llm = LLMCleanup()
         self._history = HistoryStore()
+        self._vocabulary = VocabularyManager()
 
         # Audio buffer for batch transcription
         self._audio_chunks = []
@@ -464,6 +466,9 @@ class SafeVoiceApp(rumps.App):
                     cleaned = audio_preprocess.vad_trim(cleaned)
                     text, lang = self._asr.transcribe(cleaned)
                     logger.info("ASR result: %r (lang=%s)", text, lang)
+
+                    # Apply vocabulary snippet replacements
+                    text = self._vocabulary.apply_snippets(text)
 
                 # Stop the elapsed timer
                 timer_stop.set()
