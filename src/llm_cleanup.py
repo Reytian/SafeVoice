@@ -140,7 +140,7 @@ class LLMCleanup:
         except Exception as e:
             logger.warning("LLM warm-up failed: %s", e)
 
-    def cleanup(self, raw_text: str, languages: Optional[list] = None) -> str:
+    def cleanup(self, raw_text: str, languages: Optional[list] = None, custom_prompt: str = None) -> str:
         """Clean up raw ASR text using the LLM.
 
         Args:
@@ -156,6 +156,40 @@ class LLMCleanup:
             return raw_text
 
         if not self.is_available():
+            return raw_text
+
+        if custom_prompt:
+            try:
+                messages = [
+                    {"role": "system", "content": "Follow the instruction precisely. Output only the result."},
+                    {"role": "user", "content": custom_prompt},
+                ]
+                body = json.dumps({
+                    "model": self._model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {"temperature": 0.0, "num_predict": 512, "top_p": 0.9},
+                }).encode()
+                req = urllib.request.Request(
+                    f"{OLLAMA_BASE}/api/chat",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    data = json.loads(resp.read())
+                    result = data["message"]["content"].strip()
+                    if "<think>" in result:
+                        idx = result.find("</think>")
+                        if idx != -1:
+                            result = result[idx + len("</think>"):].strip()
+                        else:
+                            result = result[:result.find("<think>")].strip()
+                    if result:
+                        logger.info("Custom LLM: %r -> %r", raw_text, result)
+                        return result
+            except Exception as e:
+                logger.warning("Custom LLM cleanup failed: %s", e)
             return raw_text
 
         try:
