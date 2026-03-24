@@ -179,20 +179,63 @@ class SetupWizard:
         ])
 
     def _render_model(self):
-        self._label("Speech Model", 22, bold=True, y=320, center=True, height=30)
-        model_ready = self._app._asr.is_loaded
-        if model_ready:
-            status = self._label("\u2713 Qwen3-ASR model is ready!", 14, y=250, center=True)
-            status.setTextColor_(
+        self._label("Models Setup", 22, bold=True, y=320, center=True, height=30)
+        self._label(
+            "SafeVoice needs two models:\n"
+            "1. ASR model for speech recognition (~1.2 GB)\n"
+            "2. LLM model for text cleanup (via Ollama)",
+            13, y=250, center=True, width=420, height=60,
+        )
+
+        # --- ASR Model Status ---
+        from .llm_backend import is_asr_model_downloaded, OllamaBackend
+
+        asr_model_id = self._app._settings.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
+        asr_ready = is_asr_model_downloaded(asr_model_id)
+
+        if asr_ready:
+            asr_status = self._label("\u2713 ASR model ready", 13, y=195, x=60)
+            asr_status.setTextColor_(
                 NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
             )
         else:
-            self._label(
-                "The ASR model (~700MB) will download automatically\non first use. This is a one-time setup.",
-                13, y=245, center=True, width=400, height=40,
+            self._asr_status = self._label("\u2717 ASR model not downloaded", 13, y=195, x=60, width=200)
+            self._asr_status.setTextColor_(NSColor.redColor())
+
+            dl_btn = self._button("Download ASR", y=191, x=280, width=100, action=self._download_asr)
+
+        # --- LLM Model Status ---
+        llm_model = self._app._settings.get("llm_local_model", "qwen2.5:3b")
+        ollama_models = OllamaBackend.list_models()
+        ollama_running = len(ollama_models) > 0
+        llm_ready = any(m["name"] == llm_model or m["name"] == f"{llm_model}:latest" for m in ollama_models)
+
+        if llm_ready:
+            llm_status = self._label(f"\u2713 LLM model ready ({llm_model})", 13, y=165, x=60)
+            llm_status.setTextColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
             )
+        elif ollama_running:
+            self._llm_status = self._label(f"\u2717 LLM model not installed ({llm_model})", 13, y=165, x=60, width=220)
+            self._llm_status.setTextColor_(NSColor.redColor())
+
+            pull_btn = self._button("Pull LLM", y=161, x=280, width=100, action=self._download_llm)
+        else:
+            self._label(
+                "\u2717 Ollama not detected. Install from ollama.com\n"
+                "   (Optional \u2014 SafeVoice works without text cleanup)",
+                12, y=160, x=60, width=320, height=30,
+            )
+
+        # Navigation
         self._button("Back", y=80, x=140, action=self._prev_step, secondary=True)
         self._button("Next", y=80, x=280, action=self._next_step)
+
+        # Auto-start downloads if models are missing
+        if not asr_ready and hasattr(self, '_asr_status'):
+            self._download_asr()
+        if ollama_running and not llm_ready and hasattr(self, '_llm_status'):
+            self._download_llm()
 
     def _render_test(self):
         self._label("Try it out!", 22, bold=True, y=320, center=True, height=30)
@@ -225,6 +268,70 @@ class SetupWizard:
             13, y=150, center=True, width=400, height=80,
         )
         self._button("Start Using SafeVoice", y=60, width=200, action=self._finish)
+
+    def _download_asr(self):
+        """Download ASR model in background."""
+        self._asr_status.setStringValue_("Downloading ASR model...")
+        self._asr_status.setTextColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
+        )
+
+        def _do_download():
+            try:
+                from huggingface_hub import snapshot_download
+                model_id = self._app._settings.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
+                snapshot_download(model_id, local_files_only=False)
+
+                # Update UI on main thread
+                from AppKit import NSObject as _NSO
+                class _Updater(_NSO):
+                    def update_(self_, sender):
+                        self._asr_status.setStringValue_("\u2713 ASR model ready!")
+                        self._asr_status.setTextColor_(
+                            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
+                        )
+                u = _Updater.alloc().init()
+                self._targets.add(u)
+                u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+            except Exception as e:
+                logger.warning("ASR download failed: %s", e)
+                self._asr_status.setStringValue_(f"Download failed: {e}")
+
+        threading.Thread(target=_do_download, daemon=True).start()
+
+    def _download_llm(self):
+        """Pull Ollama LLM model in background."""
+        self._llm_status.setStringValue_("Pulling LLM model...")
+        self._llm_status.setTextColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
+        )
+
+        def _do_pull():
+            try:
+                model = self._app._settings.get("llm_local_model", "qwen2.5:3b")
+                result = subprocess.run(
+                    ["ollama", "pull", model],
+                    capture_output=True, text=True, timeout=600,
+                )
+
+                from AppKit import NSObject as _NSO
+                class _Updater(_NSO):
+                    def update_(self_, sender):
+                        if result.returncode == 0:
+                            self._llm_status.setStringValue_("\u2713 LLM model ready!")
+                            self._llm_status.setTextColor_(
+                                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
+                            )
+                        else:
+                            self._llm_status.setStringValue_(f"Pull failed: {result.stderr[:40]}")
+                u = _Updater.alloc().init()
+                self._targets.add(u)
+                u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+            except Exception as e:
+                logger.warning("LLM pull failed: %s", e)
+                self._llm_status.setStringValue_(f"Pull failed: {e}")
+
+        threading.Thread(target=_do_pull, daemon=True).start()
 
     # --- Helpers ---
 
