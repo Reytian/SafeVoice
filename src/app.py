@@ -132,9 +132,9 @@ class SafeVoiceApp(rumps.App):
         # Preload model in background
         self._start_model_load()
 
-        # Show setup wizard on first run
+        # Show setup wizard on first run (deferred until event loop is running)
         if self._settings.get("first_run", True):
-            self._show_setup_wizard()
+            threading.Timer(1.5, self._show_setup_wizard).start()
 
         # Set up dock click handler after rumps initializes its delegate
         threading.Timer(1.0, self._setup_dock_click_handler).start()
@@ -275,10 +275,24 @@ class SafeVoiceApp(rumps.App):
         t.start()
 
     def _show_setup_wizard(self):
-        def on_complete():
-            self._settings.set("first_run", False)
-        self._wizard = SetupWizard(self, on_complete=on_complete)
-        self._wizard.show()
+        """Show setup wizard, dispatched to main thread for AppKit safety."""
+        from AppKit import NSObject as _NSObj
+        import objc as _objc
+
+        app_ref = self
+
+        class _WizardLauncher(_NSObj):
+            def launchWizard_(self_, sender):
+                def on_complete():
+                    app_ref._settings.set("first_run", False)
+                app_ref._wizard = SetupWizard(app_ref, on_complete=on_complete)
+                app_ref._wizard.show()
+
+        launcher = _WizardLauncher.alloc().init()
+        self._wizard_launcher = launcher  # prevent GC
+        launcher.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "launchWizard:", None, False
+        )
 
     def _apply_saved_settings(self):
         """Apply persisted settings to components on startup."""

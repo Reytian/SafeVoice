@@ -104,6 +104,35 @@ These are the **correct** bit positions. Getting them wrong causes modifiers to 
 - When using `performSelectorOnMainThread:withObject:waitUntilDone:False`, the trampoline NSObject must be retained (add to a class-level set) to prevent GC before the selector fires.
 - Pattern used in `overlay.py`, `settings_window.py`, `dashboard_window.py`.
 
+## Autonomous / Overnight Coding
+
+<important if="running autonomously or in bypass mode">
+
+### Progress Tracking
+- Create `PROGRESS.md` at project root before starting multi-step work
+- Update it after each significant change (what changed, what's next)
+- Git commit after each verified change — this is your undo mechanism
+
+### Verification Loop
+1. Make ONE focused change
+2. `python setup.py py2app -A` — must succeed
+3. Test manually or check `/tmp/safevoice.log` for errors
+4. If tests pass: git commit, update PROGRESS.md, continue
+5. If tests fail: git revert, log error in PROGRESS.md, try different approach
+
+### Guard Rails
+- Never modify `setup.py` or `run.py` without explicit instruction
+- Never remove existing functionality — only add or fix
+- Always preserve the audio pipeline order: normalize → VAD → ASR → LLM cleanup
+- If Ollama is not running, LLM cleanup gracefully falls back to raw text
+- Check `/tmp/safevoice.log` after changes to verify no runtime errors
+
+### Context Recovery
+- If context is lost, read `PROGRESS.md`, `CLAUDE.md`, and `git log --oneline -20`
+- The 5-question reboot: Where am I? Where am I going? What's the goal? What have I learned? What have I done?
+
+</important>
+
 ## Common Development Tasks
 
 ### Testing hotkey changes
