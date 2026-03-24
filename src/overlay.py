@@ -170,6 +170,10 @@ class FloatingOverlay:
         self._language: str = "EN"
         self._visible: bool = False
 
+        self._peak_width: float = _PANEL_MIN_WIDTH
+        self._current_status: str = "listening"
+        self._badge_label: Optional[NSTextField] = None
+
         self._build_panel()
 
     # ------------------------------------------------------------------
@@ -216,6 +220,21 @@ class FloatingOverlay:
         display = text if text else "Listening..."
         self._text_label.setStringValue_(display)
 
+        # Dynamic width calculation
+        if self._text_label is not None:
+            text_size = self._text_label.attributedStringValue().size()
+            desired = _HORIZONTAL_PADDING * 2 + _DOT_SIZE + _ELEMENT_SPACING + _BADGE_WIDTH + _ELEMENT_SPACING + text_size.width + 20
+            desired = max(_PANEL_MIN_WIDTH, min(_PANEL_MAX_WIDTH, desired))
+
+            # Peak-width: only grow during listening, never shrink
+            if self._current_status == "listening":
+                self._peak_width = max(self._peak_width, desired)
+                desired = self._peak_width
+            else:
+                self._peak_width = _PANEL_MIN_WIDTH
+
+            self._resize_panel(desired)
+
     @_ensure_main_thread
     def update_level(self, level: float) -> None:
         """Update the audio-level visualisation bar.
@@ -236,7 +255,25 @@ class FloatingOverlay:
         if status not in _STATUS_COLORS:
             return
         self._status = status
+        self._current_status = status
         self._apply_status()
+
+        # Update state badge
+        if hasattr(self, '_badge_label') and self._badge_label is not None:
+            if status == "processing":
+                self._badge_label.setStringValue_("AI")
+                self._badge_label.setBackgroundColor_(
+                    NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
+                )
+                self._badge_label.setHidden_(False)
+            elif status == "done":
+                self._badge_label.setStringValue_("OK")
+                self._badge_label.setBackgroundColor_(
+                    NSColor.colorWithCalibratedRed_green_blue_alpha_(0.3, 0.85, 0.4, 1.0)
+                )
+                self._badge_label.setHidden_(False)
+            else:
+                self._badge_label.setHidden_(True)
 
     @_ensure_main_thread
     def set_language(self, language: str) -> None:
@@ -286,6 +323,7 @@ class FloatingOverlay:
         self._language_label = None
         self._text_label = None
         self._level_view = None
+        self._badge_label = None
         self._visible = False
 
     # ------------------------------------------------------------------
@@ -353,6 +391,27 @@ class FloatingOverlay:
         content_view.addSubview_(self._dot_label)
         x_cursor += _DOT_SIZE + _ELEMENT_SPACING
 
+        # --- State badge (AI/OK) ---
+        badge_x = _HORIZONTAL_PADDING + _DOT_SIZE + 2
+        badge_y = (_PANEL_HEIGHT - 16) / 2
+        self._badge_label = NSTextField.alloc().initWithFrame_(NSMakeRect(badge_x, badge_y, 24, 16))
+        self._badge_label.setStringValue_("")
+        self._badge_label.setFont_(NSFont.boldSystemFontOfSize_(9))
+        self._badge_label.setBezeled_(False)
+        self._badge_label.setDrawsBackground_(True)
+        self._badge_label.setBackgroundColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
+        )
+        self._badge_label.setTextColor_(NSColor.whiteColor())
+        self._badge_label.setAlignment_(NSTextAlignmentCenter)
+        self._badge_label.setHidden_(True)
+        self._badge_label.setEditable_(False)
+        self._badge_label.setSelectable_(False)
+        self._badge_label.setWantsLayer_(True)
+        self._badge_label.layer().setCornerRadius_(4)
+        self._badge_label.layer().setMasksToBounds_(True)
+        content_view.addSubview_(self._badge_label)
+
         # --- Language badge ---
         badge_y = (_PANEL_HEIGHT - 20.0) / 2.0
         self._language_label = self._make_label(
@@ -418,6 +477,21 @@ class FloatingOverlay:
         label.setEditable_(False)
         label.setSelectable_(False)
         return label
+
+    def _resize_panel(self, new_width: float):
+        """Resize panel width, centered horizontally, with animation."""
+        def _do_resize():
+            if self._panel is None:
+                return
+            frame = self._panel.frame()
+            screen = NSScreen.mainScreen().visibleFrame()
+            new_x = screen.origin.x + (screen.size.width - new_width) / 2
+            new_frame = NSMakeRect(new_x, frame.origin.y, new_width, frame.size.height)
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.currentContext().setDuration_(0.15)
+            self._panel.animator().setFrame_display_(new_frame, True)
+            NSAnimationContext.endGrouping()
+        self._dispatch_to_main(_do_resize)
 
     def _apply_status(self) -> None:
         """Apply the current ``_status`` to the dot label colour."""
