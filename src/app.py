@@ -34,6 +34,7 @@ from .llm_cleanup import LLMCleanup
 from .history import HistoryStore
 from .vocabulary import VocabularyManager
 from .modes import ModeManager
+from .setup_wizard import SetupWizard
 
 
 # Language definitions -- "Auto" first so it is the default.
@@ -130,6 +131,10 @@ class SafeVoiceApp(rumps.App):
 
         # Preload model in background
         self._start_model_load()
+
+        # Show setup wizard on first run
+        if self._settings.get("first_run", True):
+            self._show_setup_wizard()
 
         # Set up dock click handler after rumps initializes its delegate
         threading.Timer(1.0, self._setup_dock_click_handler).start()
@@ -268,6 +273,12 @@ class SafeVoiceApp(rumps.App):
 
         t = threading.Thread(target=load, daemon=True)
         t.start()
+
+    def _show_setup_wizard(self):
+        def on_complete():
+            self._settings.set("first_run", False)
+        self._wizard = SetupWizard(self, on_complete=on_complete)
+        self._wizard.show()
 
     def _apply_saved_settings(self):
         """Apply persisted settings to components on startup."""

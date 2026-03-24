@@ -53,6 +53,7 @@ _DEFAULTS: Dict[str, Any] = {
     "stats_today_transcriptions": 0,
     "stats_today_words": 0,
     "stats_last_date": "",
+    "first_run": True,
 }
 
 # Type alias for a change callback: (key, old_value, new_value) -> None.
