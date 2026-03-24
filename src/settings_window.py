@@ -668,6 +668,30 @@ class SettingsWindow:
         )
         view.addSubview_(activate_container)
 
+        # --- Per-mode hotkeys ---
+        if self._modes_manager:
+            y -= _ROW_HEIGHT + 10
+            view.addSubview_(self._make_section_label("Mode Hotkeys", y + 4))
+            y -= 6
+
+            for mode in self._modes_manager.get_all():
+                y -= _ROW_HEIGHT
+                view.addSubview_(self._make_label(
+                    f"{mode.name}:",
+                    NSMakeRect(_TAB_PADDING, y, _LABEL_WIDTH, _ROW_HEIGHT),
+                    font_size=13.0,
+                ))
+                # Hotkey recorder for this mode
+                mode_hk_key = f"mode_hotkey_{mode.name}"
+                # Store mode hotkey in settings if not already there
+                current_hk = mode.hotkey or {}
+                if not self._mgr.get(mode_hk_key):
+                    self._mgr.set(mode_hk_key, current_hk)
+                mode_hk_container = self._make_hotkey_field(
+                    _CONTROL_X, y, mode_hk_key
+                )
+                view.addSubview_(mode_hk_container)
+
         # Instructions
         y -= _ROW_HEIGHT + 20
         instructions = self._make_label(
@@ -780,27 +804,26 @@ class SettingsWindow:
 
         if self._modes_manager:
             for mode in self._modes_manager.get_all():
-                hotkey_str = _format_hotkey(mode.hotkey) if mode.hotkey else "None"
                 label = self._make_label(
-                    f"{mode.name}  \u2014  {hotkey_str}",
-                    NSMakeRect(_TAB_PADDING, y, 200, 20),
+                    mode.name,
+                    NSMakeRect(_TAB_PADDING, y, 160, 20),
                     font_size=13.0,
                 )
                 view.addSubview_(label)
 
-                btn_x = 220
-                # Edit button for all modes (including Quick)
+                btn_x = 180
+                # Edit Prompt button for all modes
                 edit_btn = NSButton.alloc().initWithFrame_(
-                    NSMakeRect(btn_x, y, 50, 20)
+                    NSMakeRect(btn_x, y, 80, 20)
                 )
-                edit_btn.setTitle_("Edit")
+                edit_btn.setTitle_("Edit Prompt")
                 edit_btn.setBezelStyle_(0)
                 edit_btn.setFont_(NSFont.systemFontOfSize_(11.0))
                 target = self._make_mode_edit_target(mode.name)
                 edit_btn.setTarget_(target)
                 edit_btn.setAction_("invoke")
                 view.addSubview_(edit_btn)
-                btn_x += 55
+                btn_x += 85
 
                 # Delete button (custom modes only)
                 if not mode.builtin:
@@ -1324,10 +1347,17 @@ class SettingsWindow:
         dl_label = self._make_label("Download:", NSMakeRect(0, local_y, 65, 20), font_size=12.0)
         self._local_panel.addSubview_(dl_label)
 
-        self._ollama_dl_field = NSTextField.alloc().initWithFrame_(NSMakeRect(70, local_y, 150, 22))
-        self._ollama_dl_field.setFont_(NSFont.systemFontOfSize_(11.0))
-        self._ollama_dl_field.setPlaceholderString_("e.g. qwen2.5:7b")
-        self._local_panel.addSubview_(self._ollama_dl_field)
+        self._ollama_dl_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(70, local_y, 155, 22), False)
+        _popular_models = [
+            "qwen2.5:3b", "qwen2.5:7b", "qwen2.5:14b",
+            "llama3.2:3b", "llama3.2:8b",
+            "gemma3:4b", "phi4-mini",
+            "mistral", "deepseek-r1:7b",
+        ]
+        for m in _popular_models:
+            self._ollama_dl_popup.addItemWithTitle_(m)
+        self._local_panel.addSubview_(self._ollama_dl_popup)
 
         dl_btn = NSButton.alloc().initWithFrame_(NSMakeRect(230, local_y, 70, 22))
         dl_btn.setTitle_("Pull")
@@ -1340,7 +1370,7 @@ class SettingsWindow:
         self._local_panel.addSubview_(self._ollama_dl_status)
 
         def _pull_model():
-            model_name = self._ollama_dl_field.stringValue().strip()
+            model_name = self._ollama_dl_popup.titleOfSelectedItem()
             if not model_name:
                 return
             self._ollama_dl_status.setStringValue_(f"Downloading {model_name}...")
@@ -1354,8 +1384,7 @@ class SettingsWindow:
                     if result.returncode == 0:
                         class _Refresher(NSObject):
                             def refresh_(self_, sender):
-                                self._ollama_dl_status.setStringValue_(f"Done: {model_name}")
-                                self._ollama_dl_field.setStringValue_("")
+                                self._ollama_dl_status.setStringValue_(f"\u2713 {model_name} downloaded!")
                                 self._refresh_local_models()
                         r = _Refresher.alloc().init()
                         self._hotkey_delegates.append(r)
@@ -1391,16 +1420,6 @@ class SettingsWindow:
             color=NSColor.secondaryLabelColor(),
         )
         self._local_panel.addSubview_(local_info)
-
-        from .llm_backend import LOCAL_MODEL_INSTALL_HINTS
-        hint_text = LOCAL_MODEL_INSTALL_HINTS.get("ollama", "")
-        hint_label = self._make_label(
-            hint_text,
-            NSMakeRect(0, 0, 350, 90),
-            font_size=10.0,
-            color=NSColor.tertiaryLabelColor(),
-        )
-        self._local_panel.addSubview_(hint_label)
 
         view.addSubview_(self._local_panel)
 
