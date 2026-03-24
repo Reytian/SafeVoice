@@ -31,6 +31,7 @@ from .settings_window import SettingsWindow
 from . import audio_preprocess
 from .dashboard_window import DashboardWindow
 from .llm_cleanup import LLMCleanup
+from .history import HistoryStore
 
 
 # Language definitions -- "Auto" first so it is the default.
@@ -98,6 +99,7 @@ class SafeVoiceApp(rumps.App):
             on_open_settings=lambda: self._settings_window.show(),
         )
         self._llm = LLMCleanup()
+        self._history = HistoryStore()
 
         # Audio buffer for batch transcription
         self._audio_chunks = []
@@ -470,6 +472,7 @@ class SafeVoiceApp(rumps.App):
                     self._overlay.update_text(text)
                     # LLM cleanup for text polishing
                     stripped = text.strip()
+                    raw_for_history = stripped
                     has_cjk = any('\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff' or '\uac00' <= c <= '\ud7af' for c in stripped)
                     is_long_enough = len(stripped) >= 4 if has_cjk else len(stripped.split()) >= 3
                     if self._llm.is_available() and is_long_enough:
@@ -490,6 +493,14 @@ class SafeVoiceApp(rumps.App):
                     time.sleep(0.02)
                     self._inject_text(text)
                     self._settings.record_transcription(text)
+                    elapsed = time.monotonic() - timer_start
+                    self._history.add(
+                        final_text=text,
+                        raw_text=raw_for_history,
+                        mode="quick",
+                        duration=elapsed,
+                        language=self._settings.get("languages", ["Auto"])[0],
+                    )
                 else:
                     self._overlay.update_text("(no speech detected)")
                     time.sleep(0.3)
