@@ -90,16 +90,16 @@ class SetupWizard:
             self._content_view.addSubview_(seg)
 
     def _render_welcome(self):
-        self._label("SafeVoice", 28, bold=True, y=300, center=True)
-        self._label("Speak, and it types.", 16, y=265, center=True)
+        self._label("SafeVoice", 28, bold=True, y=300, center=True, height=36)
+        self._label("Speak, and it types.", 16, y=260, center=True, height=24)
         self._label(
             "100% on-device voice input for macOS.\nNo internet required. Your voice never leaves your Mac.",
-            13, y=195, center=True, width=400, height=50,
+            13, y=185, center=True, width=400, height=50,
         )
         self._button("Get Started", y=80, action=self._next_step)
 
     def _render_demo(self):
-        self._label("How it works", 22, bold=True, y=320, center=True)
+        self._label("How it works", 22, bold=True, y=320, center=True, height=30)
         self._label(
             "Hold your hotkey to speak. A floating bar appears showing\nyour words in real-time. Release to inject text at your cursor.",
             13, y=255, center=True, width=420, height=40,
@@ -108,11 +108,11 @@ class SetupWizard:
             "  Recording      Processing      Done  \n  \u25cf Listening       \u25cf AI working      \u2713 Injected",
             13, y=170, center=True, width=400, height=40,
         )
-        self._button("Back", y=80, x=150, action=self._prev_step, secondary=True)
-        self._button("Next", y=80, action=self._next_step)
+        self._button("Back", y=80, x=140, action=self._prev_step, secondary=True)
+        self._button("Next", y=80, x=280, action=self._next_step)
 
     def _render_permissions(self):
-        self._label("Permissions", 22, bold=True, y=320, center=True)
+        self._label("Permissions", 22, bold=True, y=320, center=True, height=30)
 
         self._label("Microphone Access", 14, bold=True, y=270, x=60)
         self._label("Required to hear your voice", 12, y=250, x=60)
@@ -127,8 +127,8 @@ class SetupWizard:
         self._update_permission_display()
         self._start_permission_polling()
 
-        self._button("Back", y=80, x=150, action=self._prev_step, secondary=True)
-        self._button("Next", y=80, action=self._next_step)
+        self._button("Back", y=80, x=140, action=self._prev_step, secondary=True)
+        self._button("Next", y=80, x=280, action=self._next_step)
 
     def _update_permission_display(self):
         try:
@@ -179,7 +179,7 @@ class SetupWizard:
         ])
 
     def _render_model(self):
-        self._label("Speech Model", 22, bold=True, y=320, center=True)
+        self._label("Speech Model", 22, bold=True, y=320, center=True, height=30)
         model_ready = self._app._asr.is_loaded
         if model_ready:
             status = self._label("\u2713 Qwen3-ASR model is ready!", 14, y=250, center=True)
@@ -191,11 +191,11 @@ class SetupWizard:
                 "The ASR model (~700MB) will download automatically\non first use. This is a one-time setup.",
                 13, y=245, center=True, width=400, height=40,
             )
-        self._button("Back", y=80, x=150, action=self._prev_step, secondary=True)
-        self._button("Next", y=80, action=self._next_step)
+        self._button("Back", y=80, x=140, action=self._prev_step, secondary=True)
+        self._button("Next", y=80, x=280, action=self._next_step)
 
     def _render_test(self):
-        self._label("Try it out!", 22, bold=True, y=320, center=True)
+        self._label("Try it out!", 22, bold=True, y=320, center=True, height=30)
         self._label(
             "Hold your activation hotkey and say something.\nCheck that the floating bar appears and text is transcribed.",
             13, y=255, center=True, width=420, height=40,
@@ -206,11 +206,11 @@ class SetupWizard:
         self._button("Next", y=80, x=310, action=self._next_step)
 
     def _render_ready(self):
-        check = self._label("\u2713", 48, y=280, center=True)
+        check = self._label("\u2713", 48, y=300, center=True, height=60)
         check.setTextColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
         )
-        self._label("You're all set!", 22, bold=True, y=240, center=True)
+        self._label("You're all set!", 22, bold=True, y=265, center=True, height=30)
 
         hotkey_display = "Option+Space"
         try:
@@ -222,9 +222,9 @@ class SetupWizard:
 
         self._label(
             f"Hold {hotkey_display} to speak.\nText is typed at your cursor on release.\n\nAccess settings from the menu bar icon.",
-            13, y=140, center=True, width=400, height=80,
+            13, y=150, center=True, width=400, height=80,
         )
-        self._button("Start Using SafeVoice", y=70, action=self._finish)
+        self._button("Start Using SafeVoice", y=60, width=200, action=self._finish)
 
     # --- Helpers ---
 

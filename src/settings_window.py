@@ -745,14 +745,14 @@ class SettingsWindow:
 
         y -= 6
         desc = self._make_label(
-            "Each mode processes your speech differently. Quick mode gives raw text. "
-            "Other modes use AI to transform the text.",
-            NSMakeRect(_TAB_PADDING, y - 26, _WINDOW_WIDTH - 2 * _TAB_PADDING, 30),
+            "Each mode processes your speech differently. Quick mode gives "
+            "raw text. Other modes use AI to transform the text.",
+            NSMakeRect(_TAB_PADDING, y - 36, _WINDOW_WIDTH - 2 * _TAB_PADDING, 40),
             font_size=11.0,
             color=NSColor.secondaryLabelColor(),
         )
         view.addSubview_(desc)
-        y -= 40
+        y -= 56
 
         if self._modes_manager:
             for mode in self._modes_manager.get_all():
@@ -767,17 +767,17 @@ class SettingsWindow:
                 )
                 view.addSubview_(label)
                 if mode.prompt_template:
-                    prompt_preview = mode.prompt_template[:60] + "..." if len(mode.prompt_template) > 60 else mode.prompt_template
+                    prompt_preview = mode.prompt_template[:50] + "..." if len(mode.prompt_template) > 50 else mode.prompt_template
                     prompt_label = self._make_label(
                         prompt_preview,
-                        NSMakeRect(_TAB_PADDING + 10, y - 18, _WINDOW_WIDTH - 2 * _TAB_PADDING - 10, 16),
+                        NSMakeRect(_TAB_PADDING + 10, y - 20, _WINDOW_WIDTH - 2 * _TAB_PADDING - 10, 16),
                         font_size=10.0,
                         color=NSColor.tertiaryLabelColor(),
                     )
                     view.addSubview_(prompt_label)
-                    y -= 44
+                    y -= 48
                 else:
-                    y -= 28
+                    y -= 32
 
         return view
 
