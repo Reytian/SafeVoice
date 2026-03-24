@@ -10,7 +10,6 @@ from AppKit import (
     NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
     NSScreen, NSObject, NSTextAlignmentCenter, NSAnimationContext,
 )
-from ApplicationServices import AXIsProcessTrusted
 from Foundation import NSTimer
 
 logger = logging.getLogger(__name__)
@@ -143,6 +142,7 @@ class SetupWizard:
             self._mic_status.setStringValue_("\u2717 Needed")
             self._mic_status.setTextColor_(NSColor.redColor())
 
+        from ApplicationServices import AXIsProcessTrusted
         if AXIsProcessTrusted():
             self._acc_status.setStringValue_("\u2713 Granted")
             self._acc_status.setTextColor_(
