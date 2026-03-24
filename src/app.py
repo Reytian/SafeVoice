@@ -35,6 +35,7 @@ from .history import HistoryStore
 from .vocabulary import VocabularyManager
 from .modes import ModeManager
 from .setup_wizard import SetupWizard
+from .llm_backend import get_backend
 
 
 # Language definitions -- "Auto" first so it is the default.
@@ -96,7 +97,8 @@ class SafeVoiceApp(rumps.App):
         self._injector = TextInjector()
         self._hotkey = HotkeyManager()
         self._overlay = FloatingOverlay()
-        self._llm = LLMCleanup()
+        self._llm_backend = self._create_llm_backend()
+        self._llm = LLMCleanup(backend=self._llm_backend)
         self._history = HistoryStore()
         self._vocabulary = VocabularyManager()
         self._modes = ModeManager()
@@ -104,6 +106,7 @@ class SafeVoiceApp(rumps.App):
             self._settings,
             modes_manager=self._modes,
             vocabulary_manager=self._vocabulary,
+            on_llm_change=self._on_llm_change,
         )
         self._dashboard = DashboardWindow(
             self._settings,
@@ -330,6 +333,34 @@ class SafeVoiceApp(rumps.App):
         activate_hk = self._settings.get("activate_hotkey")
         if activate_hk:
             self._hotkey.set_activate_hotkey(activate_hk)
+
+    def _create_llm_backend(self):
+        """Create the appropriate LLM backend from current settings."""
+        source = self._settings.get("llm_source", "local")
+        local_model = self._settings.get("llm_local_model", "qwen2.5:3b")
+        cloud_provider = self._settings.get("llm_cloud_provider", "openai")
+        cloud_model = self._settings.get("llm_cloud_model", "gpt-4o-mini")
+        cloud_api_key = ""
+        import json
+        cred_path = os.path.expanduser("~/.config/safevoice/credentials.json")
+        try:
+            if os.path.exists(cred_path):
+                with open(cred_path) as f:
+                    creds = json.load(f)
+                cloud_api_key = creds.get(cloud_provider, "")
+        except Exception:
+            pass
+        return get_backend(
+            source=source, local_model=local_model,
+            cloud_provider=cloud_provider, cloud_model=cloud_model,
+            cloud_api_key=cloud_api_key,
+        )
+
+    def _on_llm_change(self):
+        """Callback when the user changes LLM settings in the Models tab."""
+        self._llm_backend = self._create_llm_backend()
+        self._llm.set_backend(self._llm_backend)
+        logger.info("LLM backend changed to: %s", self._llm_backend.name)
 
     def _on_setting_changed(self, key, old_value, new_value):
         """Callback fired when any setting changes via the settings window."""
