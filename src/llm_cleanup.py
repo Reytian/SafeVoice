@@ -7,6 +7,7 @@ into clean, formal written text.
 import json
 import logging
 import re
+import threading
 import unicodedata
 import urllib.request
 import urllib.error
@@ -93,6 +94,9 @@ class LLMCleanup:
     def __init__(self, model: str = DEFAULT_MODEL) -> None:
         self._model = model
         self._available: Optional[bool] = None
+        self._speculative_result: Optional[str] = None
+        self._speculative_input: Optional[str] = None
+        self._speculative_lock = threading.Lock()
 
     def is_available(self) -> bool:
         """Check if Ollama is running and the model is downloaded.
@@ -139,6 +143,31 @@ class LLMCleanup:
             logger.info("LLM model warmed up: %s", self._model)
         except Exception as e:
             logger.warning("LLM warm-up failed: %s", e)
+
+    def speculative_cleanup(self, text: str, custom_prompt: str = None):
+        """Fire-and-forget: run cleanup in background, cache result."""
+        def _run():
+            result = self.cleanup(text, custom_prompt=custom_prompt)
+            with self._speculative_lock:
+                self._speculative_input = text
+                self._speculative_result = result
+        threading.Thread(target=_run, daemon=True).start()
+
+    def get_speculative_result(self, text: str) -> Optional[str]:
+        """Return cached result if input matches, else None."""
+        with self._speculative_lock:
+            if self._speculative_input == text and self._speculative_result:
+                result = self._speculative_result
+                self._speculative_input = None
+                self._speculative_result = None
+                return result
+        return None
+
+    def clear_speculative(self):
+        """Clear any cached speculative result."""
+        with self._speculative_lock:
+            self._speculative_input = None
+            self._speculative_result = None
 
     def cleanup(self, raw_text: str, languages: Optional[list] = None, custom_prompt: str = None) -> str:
         """Clean up raw ASR text using the LLM.
