@@ -133,6 +133,18 @@ _KEY_DISPLAY = {
     "right": "\u2192",
 }
 
+# Cloud provider display names and reverse mapping.
+_PROVIDER_DISPLAY = {
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "google": "Google",
+    "zhipu": "Zhipu (GLM)",
+    "moonshot": "Moonshot (Kimi)",
+    "dashscope": "Dashscope (Qwen)",
+    "deepseek": "DeepSeek",
+}
+_PROVIDER_REVERSE = {v: k for k, v in _PROVIDER_DISPLAY.items()}
+
 
 def _format_hotkey(hotkey_dict: Dict[str, Any]) -> str:
     """Format a hotkey dict like {"key": "space", "modifiers": ["alt"]}
@@ -1282,10 +1294,10 @@ class SettingsWindow:
 
         # --- Local panel ---
         self._local_panel = NSView.alloc().initWithFrame_(
-            NSMakeRect(_TAB_PADDING + 10, y - 50, _WINDOW_WIDTH - 2 * _TAB_PADDING - 20, 50)
+            NSMakeRect(_TAB_PADDING + 10, y - 150, _WINDOW_WIDTH - 2 * _TAB_PADDING - 20, 150)
         )
 
-        local_y = 26
+        local_y = 126
         self._local_panel.addSubview_(self._make_label(
             "Model:", NSMakeRect(0, local_y, 50, 22), font_size=12.0))
 
@@ -1307,11 +1319,22 @@ class SettingsWindow:
 
         local_info = self._make_label(
             "Local models keep your data private. No internet required.",
-            NSMakeRect(0, 0, 350, 18),
+            NSMakeRect(0, local_y - 22, 350, 18),
             font_size=10.0,
             color=NSColor.secondaryLabelColor(),
         )
         self._local_panel.addSubview_(local_info)
+
+        from .llm_backend import LOCAL_MODEL_INSTALL_HINTS
+        hint_text = LOCAL_MODEL_INSTALL_HINTS.get("ollama", "")
+        hint_label = self._make_label(
+            hint_text,
+            NSMakeRect(0, 0, 350, 90),
+            font_size=10.0,
+            color=NSColor.tertiaryLabelColor(),
+        )
+        self._local_panel.addSubview_(hint_label)
+
         view.addSubview_(self._local_panel)
 
         # --- Cloud panel ---
@@ -1324,12 +1347,12 @@ class SettingsWindow:
             "Provider:", NSMakeRect(0, cloud_y, 60, 22), font_size=12.0))
 
         self._cloud_provider_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(65, cloud_y, 100, 24), False)
-        for provider in ("OpenAI", "Anthropic", "Google"):
-            self._cloud_provider_popup.addItemWithTitle_(provider)
+            NSMakeRect(65, cloud_y, 140, 24), False)
+        for display_name in _PROVIDER_DISPLAY.values():
+            self._cloud_provider_popup.addItemWithTitle_(display_name)
         current_provider = self._mgr.get("llm_cloud_provider", "openai")
-        self._cloud_provider_popup.selectItemWithTitle_(current_provider.capitalize()
-            if current_provider != "openai" else "OpenAI")
+        display_title = _PROVIDER_DISPLAY.get(current_provider, "OpenAI")
+        self._cloud_provider_popup.selectItemWithTitle_(display_title)
         # Wire provider change to repopulate model dropdown
         provider_change_target = _SettingsCallbackTarget.alloc().initWithCallback_(
             self._on_cloud_provider_changed)
@@ -1339,11 +1362,11 @@ class SettingsWindow:
         self._cloud_panel.addSubview_(self._cloud_provider_popup)
 
         self._cloud_panel.addSubview_(self._make_label(
-            "Model:", NSMakeRect(175, cloud_y, 45, 22), font_size=12.0))
+            "Model:", NSMakeRect(215, cloud_y, 45, 22), font_size=12.0))
 
         # Cloud model dropdown (populated per provider)
         self._cloud_model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(220, cloud_y, 130, 24), False)
+            NSMakeRect(260, cloud_y, 130, 24), False)
         self._populate_cloud_models(current_provider)
         self._cloud_panel.addSubview_(self._cloud_model_popup)
 
@@ -1443,7 +1466,7 @@ class SettingsWindow:
         """Handle cloud provider dropdown change — repopulate model list."""
         title = self._cloud_provider_popup.titleOfSelectedItem()
         if title:
-            provider = title.lower()
+            provider = _PROVIDER_REVERSE.get(title, title.lower())
             self._populate_cloud_models(provider)
 
     def _apply_models_settings(self):
@@ -1464,9 +1487,8 @@ class SettingsWindow:
             if model_title and model_title != "(no models found)":
                 self._mgr.set("llm_local_model", model_title)
         else:
-            provider = self._cloud_provider_popup.titleOfSelectedItem().lower()
-            if provider == "openai":
-                provider = "openai"  # keep lowercase
+            provider_title = self._cloud_provider_popup.titleOfSelectedItem()
+            provider = _PROVIDER_REVERSE.get(provider_title, provider_title.lower())
             self._mgr.set("llm_cloud_provider", provider)
             models = CLOUD_LLM_MODELS.get(provider, [])
             model_idx = self._cloud_model_popup.indexOfSelectedItem()

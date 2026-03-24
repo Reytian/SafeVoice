@@ -51,3 +51,31 @@ def test_get_backend_cloud():
         cloud_model="gpt-4o-mini", cloud_api_key="sk-test"
     )
     assert isinstance(backend, CloudBackend)
+
+
+def test_cloud_backend_zhipu_url():
+    backend = CloudBackend(provider="zhipu", model="glm-4-flash", api_key="test-key")
+    url, headers, body = backend._build_request("Hello", "Fix this")
+    assert "bigmodel.cn" in url
+    assert headers["Authorization"] == "Bearer test-key"
+
+
+def test_cloud_backend_moonshot_url():
+    backend = CloudBackend(provider="moonshot", model="moonshot-v1-8k", api_key="test-key")
+    url, headers, body = backend._build_request("Hello", "Fix this")
+    assert "moonshot.cn" in url
+    assert headers["Authorization"] == "Bearer test-key"
+
+
+def test_cloud_backend_dashscope_url():
+    backend = CloudBackend(provider="dashscope", model="qwen-turbo", api_key="test-key")
+    url, headers, body = backend._build_request("Hello", "Fix this")
+    assert "dashscope.aliyuncs.com" in url
+    assert headers["Authorization"] == "Bearer test-key"
+
+
+def test_cloud_backend_deepseek_url():
+    backend = CloudBackend(provider="deepseek", model="deepseek-chat", api_key="test-key")
+    url, headers, body = backend._build_request("Hello", "Fix this")
+    assert "deepseek.com" in url
+    assert headers["Authorization"] == "Bearer test-key"
