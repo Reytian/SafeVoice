@@ -1350,7 +1350,8 @@ class SettingsWindow:
         self._ollama_dl_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(70, local_y, 155, 22), False)
         _popular_models = [
-            "qwen2.5:3b", "qwen2.5:7b", "qwen2.5:14b",
+            "qwen3:4b", "qwen3:8b", "qwen3:14b",
+            "qwen2.5:3b", "qwen2.5:7b",
             "llama3.2:3b", "llama3.2:8b",
             "gemma3:4b", "phi4-mini",
             "mistral", "deepseek-r1:7b",
