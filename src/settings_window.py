@@ -20,6 +20,7 @@ from AppKit import (
     NSBackingStoreBuffered,
     NSView,
     NSTextField,
+    NSSecureTextField,
     NSColor,
     NSFont,
     NSScreen,
@@ -42,6 +43,7 @@ from Foundation import NSMakeRect, NSObject, NSSize
 import objc
 
 from .settings_manager import SettingsManager, SUPPORTED_LANGUAGES
+from .llm_backend import OllamaBackend, CLOUD_DEFAULTS
 
 
 # ---------------------------------------------------------------------------
@@ -295,8 +297,9 @@ class SettingsWindow:
         win.show()
     """
 
-    def __init__(self, settings_manager: SettingsManager, on_setting_changed=None, modes_manager=None, vocabulary_manager=None) -> None:
+    def __init__(self, settings_manager: SettingsManager, on_setting_changed=None, modes_manager=None, vocabulary_manager=None, on_llm_change=None) -> None:
         self._mgr = settings_manager
+        self._on_llm_change = on_llm_change
         self._modes_manager = modes_manager
         self._vocabulary_manager = vocabulary_manager
         self._window: Optional[NSWindow] = None
@@ -392,6 +395,12 @@ class SettingsWindow:
         vocab_item.setLabel_("Vocabulary")
         vocab_item.setView_(self._build_vocabulary_tab())
         tab_view.addTabViewItem_(vocab_item)
+
+        # Models tab
+        models_item = NSTabViewItem.alloc().initWithIdentifier_("models")
+        models_item.setLabel_("Models")
+        models_item.setView_(self._build_models_tab())
+        tab_view.addTabViewItem_(models_item)
 
         self._window.contentView().addSubview_(tab_view)
 
@@ -1156,6 +1165,257 @@ class SettingsWindow:
         target = _SettingsCallbackTarget.alloc().initWithCallback_(_add)
         self._hotkey_delegates.append(target)
         return target
+
+    # ------------------------------------------------------------------
+    # Models tab
+    # ------------------------------------------------------------------
+
+    def _build_models_tab(self) -> NSView:
+        """Build the Models tab with ASR info and local/cloud LLM selection."""
+        view = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT - 60)
+        )
+        content_height = _WINDOW_HEIGHT - 60
+        y = content_height - _TAB_PADDING
+
+        # --- ASR section ---
+        y -= _ROW_HEIGHT
+        view.addSubview_(self._make_section_label("Speech Recognition (ASR)", y + 4))
+        y -= _ROW_HEIGHT
+        asr_info = self._make_label(
+            "Qwen3-ASR-0.6B \u2014 ~1.2 GB \u2014 100% on-device",
+            NSMakeRect(_TAB_PADDING + 10, y, _WINDOW_WIDTH - 2 * _TAB_PADDING, 20),
+            font_size=12.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        view.addSubview_(asr_info)
+        y -= 20
+
+        # --- LLM section ---
+        y -= _ROW_HEIGHT
+        view.addSubview_(self._make_section_label("Text Cleanup (LLM)", y + 4))
+        y -= 6
+
+        # Source toggle radio buttons
+        current_source = self._mgr.get("llm_source", "local")
+
+        source_group_y = y - 2 * _ROW_HEIGHT
+        source_group = NSView.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING + 10, source_group_y, 300, 2 * _ROW_HEIGHT)
+        )
+
+        self._llm_local_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(0, _ROW_HEIGHT, 160, _ROW_HEIGHT)
+        )
+        self._llm_local_btn.setButtonType_(NSButtonTypeRadio)
+        self._llm_local_btn.setTitle_("Local (Ollama)")
+        self._llm_local_btn.setFont_(NSFont.systemFontOfSize_(13.0))
+        self._llm_local_btn.setState_(NSOnState if current_source == "local" else NSOffState)
+        local_target = self._make_llm_source_target("local")
+        self._llm_local_btn.setTarget_(local_target)
+        self._llm_local_btn.setAction_("invoke")
+        source_group.addSubview_(self._llm_local_btn)
+
+        self._llm_cloud_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(0, 0, 160, _ROW_HEIGHT)
+        )
+        self._llm_cloud_btn.setButtonType_(NSButtonTypeRadio)
+        self._llm_cloud_btn.setTitle_("Cloud API")
+        self._llm_cloud_btn.setFont_(NSFont.systemFontOfSize_(13.0))
+        self._llm_cloud_btn.setState_(NSOnState if current_source == "cloud" else NSOffState)
+        cloud_target = self._make_llm_source_target("cloud")
+        self._llm_cloud_btn.setTarget_(cloud_target)
+        self._llm_cloud_btn.setAction_("invoke")
+        source_group.addSubview_(self._llm_cloud_btn)
+
+        view.addSubview_(source_group)
+        y -= 2 * _ROW_HEIGHT + 10
+
+        # --- Local panel ---
+        self._local_panel = NSView.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING + 10, y - 50, _WINDOW_WIDTH - 2 * _TAB_PADDING - 20, 50)
+        )
+
+        local_y = 26
+        self._local_panel.addSubview_(self._make_label(
+            "Model:", NSMakeRect(0, local_y, 50, 22), font_size=12.0))
+
+        self._local_model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(55, local_y, 200, 24), False)
+        self._populate_local_models()
+        self._local_panel.addSubview_(self._local_model_popup)
+
+        refresh_btn = NSButton.alloc().initWithFrame_(NSMakeRect(260, local_y, 70, 24))
+        refresh_btn.setTitle_("Refresh")
+        refresh_btn.setBezelStyle_(NSBezelStyleRounded)
+        refresh_btn.setFont_(NSFont.systemFontOfSize_(11.0))
+        refresh_target = _SettingsCallbackTarget.alloc().initWithCallback_(
+            self._populate_local_models)
+        self._hotkey_delegates.append(refresh_target)
+        refresh_btn.setTarget_(refresh_target)
+        refresh_btn.setAction_("invoke")
+        self._local_panel.addSubview_(refresh_btn)
+
+        local_info = self._make_label(
+            "Local models keep your data private. No internet required.",
+            NSMakeRect(0, 0, 350, 18),
+            font_size=10.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        self._local_panel.addSubview_(local_info)
+        view.addSubview_(self._local_panel)
+
+        # --- Cloud panel ---
+        self._cloud_panel = NSView.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING + 10, y - 50, _WINDOW_WIDTH - 2 * _TAB_PADDING - 20, 50)
+        )
+
+        cloud_y = 26
+        self._cloud_panel.addSubview_(self._make_label(
+            "Provider:", NSMakeRect(0, cloud_y, 60, 22), font_size=12.0))
+
+        self._cloud_provider_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(65, cloud_y, 100, 24), False)
+        for provider in ("OpenAI", "Anthropic", "Google"):
+            self._cloud_provider_popup.addItemWithTitle_(provider)
+        current_provider = self._mgr.get("llm_cloud_provider", "openai")
+        self._cloud_provider_popup.selectItemWithTitle_(current_provider.capitalize()
+            if current_provider != "openai" else "OpenAI")
+        self._cloud_panel.addSubview_(self._cloud_provider_popup)
+
+        self._cloud_panel.addSubview_(self._make_label(
+            "Model:", NSMakeRect(175, cloud_y, 45, 22), font_size=12.0))
+
+        self._cloud_model_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(220, cloud_y, 130, 22))
+        self._cloud_model_field.setFont_(NSFont.systemFontOfSize_(12.0))
+        current_cloud_model = self._mgr.get("llm_cloud_model", "gpt-4o-mini")
+        self._cloud_model_field.setStringValue_(current_cloud_model)
+        self._cloud_panel.addSubview_(self._cloud_model_field)
+
+        # API key row
+        self._cloud_panel.addSubview_(self._make_label(
+            "API Key:", NSMakeRect(0, 0, 55, 22), font_size=12.0))
+        self._cloud_api_key_field = NSSecureTextField.alloc().initWithFrame_(
+            NSMakeRect(65, 0, 285, 22))
+        self._cloud_api_key_field.setFont_(NSFont.systemFontOfSize_(12.0))
+        self._load_api_key(self._cloud_api_key_field, current_provider)
+        self._cloud_panel.addSubview_(self._cloud_api_key_field)
+
+        view.addSubview_(self._cloud_panel)
+
+        # Show/hide panels based on current source
+        self._local_panel.setHidden_(current_source != "local")
+        self._cloud_panel.setHidden_(current_source != "cloud")
+
+        y -= 56
+
+        # Cloud privacy info (always visible below cloud panel position)
+        self._cloud_info_label = self._make_label(
+            "Cloud models may be more accurate, but text is sent to the provider.",
+            NSMakeRect(_TAB_PADDING + 10, y - 20, _WINDOW_WIDTH - 2 * _TAB_PADDING - 20, 18),
+            font_size=10.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        self._cloud_info_label.setHidden_(current_source != "cloud")
+        view.addSubview_(self._cloud_info_label)
+
+        # Apply button
+        apply_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(_WINDOW_WIDTH - _TAB_PADDING - 80, _TAB_PADDING, 70, 28)
+        )
+        apply_btn.setTitle_("Apply")
+        apply_btn.setBezelStyle_(NSBezelStyleRounded)
+        apply_btn.setFont_(NSFont.systemFontOfSize_(12.0))
+        apply_target = _SettingsCallbackTarget.alloc().initWithCallback_(
+            self._apply_models_settings)
+        self._hotkey_delegates.append(apply_target)
+        apply_btn.setTarget_(apply_target)
+        apply_btn.setAction_("invoke")
+        view.addSubview_(apply_btn)
+
+        return view
+
+    def _make_llm_source_target(self, source_value: str):
+        """Create a target for LLM source radio buttons."""
+        def callback():
+            is_local = source_value == "local"
+            self._llm_local_btn.setState_(NSOnState if is_local else NSOffState)
+            self._llm_cloud_btn.setState_(NSOffState if is_local else NSOnState)
+            self._local_panel.setHidden_(not is_local)
+            self._cloud_panel.setHidden_(is_local)
+            self._cloud_info_label.setHidden_(is_local)
+        target = _SettingsCallbackTarget.alloc().initWithCallback_(callback)
+        self._hotkey_delegates.append(target)
+        return target
+
+    def _populate_local_models(self):
+        """Populate the local model dropdown from Ollama."""
+        self._local_model_popup.removeAllItems()
+        models = OllamaBackend.list_models()
+        if not models:
+            self._local_model_popup.addItemWithTitle_("(no models found)")
+        else:
+            for m in models:
+                self._local_model_popup.addItemWithTitle_(m)
+        # Select current setting
+        current = self._mgr.get("llm_local_model", "qwen2.5:3b")
+        if current in models:
+            self._local_model_popup.selectItemWithTitle_(current)
+
+    def _apply_models_settings(self):
+        """Save all Models tab settings and invoke the change callback."""
+        is_local = self._llm_local_btn.state() == NSOnState
+        source = "local" if is_local else "cloud"
+        self._mgr.set("llm_source", source)
+
+        if is_local:
+            model_title = self._local_model_popup.titleOfSelectedItem()
+            if model_title and model_title != "(no models found)":
+                self._mgr.set("llm_local_model", model_title)
+        else:
+            provider = self._cloud_provider_popup.titleOfSelectedItem().lower()
+            if provider == "openai":
+                provider = "openai"  # keep lowercase
+            self._mgr.set("llm_cloud_provider", provider)
+            self._mgr.set("llm_cloud_model",
+                          self._cloud_model_field.stringValue().strip())
+            api_key = self._cloud_api_key_field.stringValue().strip()
+            self._save_api_key(provider, api_key)
+
+        if self._on_llm_change:
+            self._on_llm_change()
+
+    def _load_api_key(self, field, provider: str) -> None:
+        """Load an API key from ~/.config/safevoice/credentials.json."""
+        import os, json
+        cred_path = os.path.expanduser("~/.config/safevoice/credentials.json")
+        try:
+            if os.path.exists(cred_path):
+                with open(cred_path) as f:
+                    creds = json.load(f)
+                key = creds.get(provider, "")
+                field.setStringValue_(key)
+        except Exception:
+            pass
+
+    def _save_api_key(self, provider: str, api_key: str) -> None:
+        """Save an API key to ~/.config/safevoice/credentials.json with 0600 perms."""
+        import os, json
+        cred_dir = os.path.expanduser("~/.config/safevoice")
+        cred_path = os.path.join(cred_dir, "credentials.json")
+        os.makedirs(cred_dir, exist_ok=True)
+        creds = {}
+        try:
+            if os.path.exists(cred_path):
+                with open(cred_path) as f:
+                    creds = json.load(f)
+        except Exception:
+            pass
+        creds[provider] = api_key
+        with open(cred_path, "w") as f:
+            json.dump(creds, f, indent=2)
+        os.chmod(cred_path, 0o600)
 
     # ------------------------------------------------------------------
     # Sync UI state from SettingsManager
