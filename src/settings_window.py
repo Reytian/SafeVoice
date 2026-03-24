@@ -34,6 +34,9 @@ from AppKit import (
     NSTextAlignmentCenter,
     NSOnState,
     NSOffState,
+    NSPopUpButton,
+    NSTextView,
+    NSPanel,
 )
 from Foundation import NSMakeRect, NSObject, NSSize
 import objc
@@ -731,55 +734,249 @@ class SettingsWindow:
     # ------------------------------------------------------------------
 
     def _build_modes_tab(self) -> NSView:
-        """Build the Modes tab showing available processing modes."""
+        """Build the Modes tab with interactive edit/delete controls."""
         view = NSView.alloc().initWithFrame_(
             NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT - 60)
         )
+        self._modes_container = view
+        self._populate_modes_view(view)
+        return view
+
+    def _populate_modes_view(self, view) -> None:
+        """Populate (or re-populate) the modes tab contents."""
+        for subview in list(view.subviews()):
+            subview.removeFromSuperview()
+
         content_height = _WINDOW_HEIGHT - 60
         y = content_height - _TAB_PADDING
 
-        # Title
         y -= _ROW_HEIGHT
-        title = self._make_section_label("Processing Modes", y + 4)
-        view.addSubview_(title)
-
-        y -= 6
-        desc = self._make_label(
-            "Each mode processes your speech differently. Quick mode gives "
-            "raw text. Other modes use AI to transform the text.",
-            NSMakeRect(_TAB_PADDING, y - 36, _WINDOW_WIDTH - 2 * _TAB_PADDING, 40),
-            font_size=11.0,
-            color=NSColor.secondaryLabelColor(),
-        )
-        view.addSubview_(desc)
-        y -= 56
+        view.addSubview_(self._make_section_label("Processing Modes", y + 4))
+        y -= 30
 
         if self._modes_manager:
             for mode in self._modes_manager.get_all():
-                hotkey_str = ""
-                if mode.hotkey:
-                    hotkey_str = _format_hotkey(mode.hotkey)
-                label_text = f"{mode.name}  \u2014  {hotkey_str}" if hotkey_str else mode.name
+                hotkey_str = _format_hotkey(mode.hotkey) if mode.hotkey else "None"
                 label = self._make_label(
-                    label_text,
-                    NSMakeRect(_TAB_PADDING, y, _WINDOW_WIDTH - 2 * _TAB_PADDING, 20),
+                    f"{mode.name}  \u2014  {hotkey_str}",
+                    NSMakeRect(_TAB_PADDING, y, 200, 20),
                     font_size=13.0,
                 )
                 view.addSubview_(label)
+
+                btn_x = 220
+                # Edit button (not for Quick mode which has no prompt)
+                if mode.prompt_template is not None:
+                    edit_btn = NSButton.alloc().initWithFrame_(
+                        NSMakeRect(btn_x, y, 40, 20)
+                    )
+                    edit_btn.setTitle_("Edit")
+                    edit_btn.setBezelStyle_(0)
+                    edit_btn.setFont_(NSFont.systemFontOfSize_(11.0))
+                    target = self._make_mode_edit_target(mode.name)
+                    edit_btn.setTarget_(target)
+                    edit_btn.setAction_("invoke")
+                    view.addSubview_(edit_btn)
+                    btn_x += 45
+
+                # Delete button (custom modes only)
+                if not mode.builtin:
+                    del_btn = NSButton.alloc().initWithFrame_(
+                        NSMakeRect(btn_x, y, 50, 20)
+                    )
+                    del_btn.setTitle_("Delete")
+                    del_btn.setBezelStyle_(0)
+                    del_btn.setFont_(NSFont.systemFontOfSize_(11.0))
+                    target = self._make_mode_delete_target(mode.name)
+                    del_btn.setTarget_(target)
+                    del_btn.setAction_("invoke")
+                    view.addSubview_(del_btn)
+
+                # Prompt preview
                 if mode.prompt_template:
-                    prompt_preview = mode.prompt_template[:50] + "..." if len(mode.prompt_template) > 50 else mode.prompt_template
-                    prompt_label = self._make_label(
-                        prompt_preview,
-                        NSMakeRect(_TAB_PADDING + 10, y - 20, _WINDOW_WIDTH - 2 * _TAB_PADDING - 10, 16),
+                    preview = (
+                        mode.prompt_template[:50] + "..."
+                        if len(mode.prompt_template) > 50
+                        else mode.prompt_template
+                    )
+                    plabel = self._make_label(
+                        preview,
+                        NSMakeRect(_TAB_PADDING + 10, y - 18, 290, 16),
                         font_size=10.0,
                         color=NSColor.tertiaryLabelColor(),
                     )
-                    view.addSubview_(prompt_label)
+                    view.addSubview_(plabel)
                     y -= 48
                 else:
                     y -= 32
 
-        return view
+        # Add Mode button
+        y -= 10
+        add_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING, y, 120, 24)
+        )
+        add_btn.setTitle_("+ Add Mode")
+        add_btn.setBezelStyle_(1)
+        target = self._make_mode_edit_target(None)
+        add_btn.setTarget_(target)
+        add_btn.setAction_("invoke")
+        view.addSubview_(add_btn)
+
+    def _make_mode_edit_target(self, mode_name):
+        """Create a target that opens the mode editor for the given mode."""
+        target = _SettingsCallbackTarget.alloc().initWithCallback_(
+            lambda: self._show_mode_editor(mode_name)
+        )
+        self._hotkey_delegates.append(target)
+        return target
+
+    def _make_mode_delete_target(self, mode_name):
+        """Create a target that deletes a custom mode and refreshes."""
+        def _delete():
+            self._modes_manager.remove(mode_name)
+            self._refresh_modes_tab()
+        target = _SettingsCallbackTarget.alloc().initWithCallback_(_delete)
+        self._hotkey_delegates.append(target)
+        return target
+
+    def _refresh_modes_tab(self) -> None:
+        """Re-populate the modes tab after data changes."""
+        if hasattr(self, '_modes_container') and self._modes_container:
+            self._populate_modes_view(self._modes_container)
+
+    def _show_mode_editor(self, mode_name=None):
+        """Open a modal panel for creating or editing a processing mode."""
+        from .modes import Mode, STYLE_PRESETS
+
+        editing = self._modes_manager.get(mode_name) if mode_name else None
+
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 420, 400),
+            NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
+            NSBackingStoreBuffered, False,
+        )
+        panel.setTitle_("Edit Mode" if editing else "New Mode")
+        panel.center()
+        panel.setLevel_(5)
+        content = panel.contentView()
+        y = 360
+
+        # Name field
+        content.addSubview_(self._make_label(
+            "Name:", NSMakeRect(20, y, 60, 20), font_size=12.0))
+        name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(90, y, 300, 22))
+        name_field.setStringValue_(editing.name if editing else "")
+        name_field.setFont_(NSFont.systemFontOfSize_(12.0))
+        if editing and editing.builtin:
+            name_field.setEditable_(False)
+        content.addSubview_(name_field)
+        y -= 36
+
+        # Style preset dropdown
+        content.addSubview_(self._make_label(
+            "Style:", NSMakeRect(20, y, 60, 20), font_size=12.0))
+        preset_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(90, y, 300, 24), False)
+        preset_popup.addItemWithTitle_("Custom")
+        for pname in STYLE_PRESETS:
+            preset_popup.addItemWithTitle_(pname.title())
+        content.addSubview_(preset_popup)
+        y -= 36
+
+        # Prompt text area
+        content.addSubview_(self._make_label(
+            "Prompt:", NSMakeRect(20, y, 60, 20), font_size=12.0))
+        scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(90, y - 80, 300, 100))
+        scroll.setHasVerticalScroller_(True)
+        scroll.setBorderType_(1)
+        text_view = NSTextView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, 280, 100))
+        text_view.setFont_(NSFont.systemFontOfSize_(11.0))
+        if editing and editing.prompt_template:
+            text_view.setString_(editing.prompt_template)
+        else:
+            text_view.setString_(STYLE_PRESETS.get("professional", ""))
+        scroll.setDocumentView_(text_view)
+        content.addSubview_(scroll)
+        y -= 120
+
+        # Preset change callback
+        def on_preset_change():
+            selected = preset_popup.titleOfSelectedItem().lower()
+            if selected in STYLE_PRESETS:
+                text_view.setString_(STYLE_PRESETS[selected])
+
+        preset_target = _SettingsCallbackTarget.alloc().initWithCallback_(
+            on_preset_change)
+        self._hotkey_delegates.append(preset_target)
+        preset_popup.setTarget_(preset_target)
+        preset_popup.setAction_("invoke")
+
+        # Target language dropdown
+        content.addSubview_(self._make_label(
+            "Translate to:", NSMakeRect(20, y, 80, 20), font_size=12.0))
+        lang_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(110, y, 180, 24), False)
+        lang_popup.addItemWithTitle_("None")
+        for lang_info in SUPPORTED_LANGUAGES:
+            if lang_info["name"] != "Auto":
+                lang_popup.addItemWithTitle_(lang_info["name"])
+        if editing and editing.translation_language:
+            lang_popup.selectItemWithTitle_(editing.translation_language)
+        content.addSubview_(lang_popup)
+        y -= 40
+
+        # Cancel button
+        cancel_btn = NSButton.alloc().initWithFrame_(NSMakeRect(200, 20, 80, 30))
+        cancel_btn.setTitle_("Cancel")
+        cancel_btn.setBezelStyle_(0)
+        cancel_target = _SettingsCallbackTarget.alloc().initWithCallback_(
+            lambda: panel.close())
+        self._hotkey_delegates.append(cancel_target)
+        cancel_btn.setTarget_(cancel_target)
+        cancel_btn.setAction_("invoke")
+        content.addSubview_(cancel_btn)
+
+        # Save button
+        def _save():
+            name = name_field.stringValue().strip()
+            prompt = text_view.string().strip()
+            if not name:
+                return
+            lang_title = lang_popup.titleOfSelectedItem()
+            trans_lang = lang_title if lang_title != "None" else None
+            new_mode = Mode(
+                name=name,
+                prompt_template=prompt if prompt else None,
+                hotkey=editing.hotkey if editing else None,
+                translation_language=trans_lang,
+            )
+            if editing and editing.builtin:
+                # For built-in modes, update hotkey and prompt via manager
+                # without going through add() which forces builtin=False
+                existing = self._modes_manager.get(editing.name)
+                if existing:
+                    existing.prompt_template = new_mode.prompt_template
+                    existing.translation_language = new_mode.translation_language
+                    self._modes_manager._save()
+            else:
+                self._modes_manager.add(new_mode)
+            self._refresh_modes_tab()
+            panel.close()
+
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(290, 20, 80, 30))
+        save_btn.setTitle_("Save")
+        save_btn.setBezelStyle_(1)
+        save_btn.setKeyEquivalent_("\r")
+        save_target = _SettingsCallbackTarget.alloc().initWithCallback_(_save)
+        self._hotkey_delegates.append(save_target)
+        save_btn.setTarget_(save_target)
+        save_btn.setAction_("invoke")
+        content.addSubview_(save_btn)
+
+        self._mode_editor_panel = panel
+        panel.makeKeyAndOrderFront_(None)
 
     # ------------------------------------------------------------------
     # Vocabulary tab
