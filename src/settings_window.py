@@ -292,8 +292,10 @@ class SettingsWindow:
         win.show()
     """
 
-    def __init__(self, settings_manager: SettingsManager) -> None:
+    def __init__(self, settings_manager: SettingsManager, on_setting_changed=None, modes_manager=None, vocabulary_manager=None) -> None:
         self._mgr = settings_manager
+        self._modes_manager = modes_manager
+        self._vocabulary_manager = vocabulary_manager
         self._window: Optional[NSWindow] = None
         self._language_buttons: list = []
         self._hotkey_delegates: list = []  # prevent GC
@@ -375,6 +377,18 @@ class SettingsWindow:
         advanced_item.setLabel_("Advanced")
         advanced_item.setView_(self._build_advanced_tab())
         tab_view.addTabViewItem_(advanced_item)
+
+        # Modes tab
+        modes_item = NSTabViewItem.alloc().initWithIdentifier_("modes")
+        modes_item.setLabel_("Modes")
+        modes_item.setView_(self._build_modes_tab())
+        tab_view.addTabViewItem_(modes_item)
+
+        # Vocabulary tab
+        vocab_item = NSTabViewItem.alloc().initWithIdentifier_("vocab")
+        vocab_item.setLabel_("Vocabulary")
+        vocab_item.setView_(self._build_vocabulary_tab())
+        tab_view.addTabViewItem_(vocab_item)
 
         self._window.contentView().addSubview_(tab_view)
 
@@ -711,6 +725,123 @@ class SettingsWindow:
         target = _SettingsCallbackTarget.alloc().initWithCallback_(callback)
         self._hotkey_delegates.append(target)
         return target
+
+    # ------------------------------------------------------------------
+    # Modes tab
+    # ------------------------------------------------------------------
+
+    def _build_modes_tab(self) -> NSView:
+        """Build the Modes tab showing available processing modes."""
+        view = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT - 60)
+        )
+        content_height = _WINDOW_HEIGHT - 60
+        y = content_height - _TAB_PADDING
+
+        # Title
+        y -= _ROW_HEIGHT
+        title = self._make_section_label("Processing Modes", y + 4)
+        view.addSubview_(title)
+
+        y -= 6
+        desc = self._make_label(
+            "Each mode processes your speech differently. Quick mode gives raw text. "
+            "Other modes use AI to transform the text.",
+            NSMakeRect(_TAB_PADDING, y - 26, _WINDOW_WIDTH - 2 * _TAB_PADDING, 30),
+            font_size=11.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        view.addSubview_(desc)
+        y -= 40
+
+        if self._modes_manager:
+            for mode in self._modes_manager.get_all():
+                hotkey_str = ""
+                if mode.hotkey:
+                    hotkey_str = _format_hotkey(mode.hotkey)
+                label_text = f"{mode.name}  \u2014  {hotkey_str}" if hotkey_str else mode.name
+                label = self._make_label(
+                    label_text,
+                    NSMakeRect(_TAB_PADDING, y, _WINDOW_WIDTH - 2 * _TAB_PADDING, 20),
+                    font_size=13.0,
+                )
+                view.addSubview_(label)
+                if mode.prompt_template:
+                    prompt_preview = mode.prompt_template[:60] + "..." if len(mode.prompt_template) > 60 else mode.prompt_template
+                    prompt_label = self._make_label(
+                        prompt_preview,
+                        NSMakeRect(_TAB_PADDING + 10, y - 18, _WINDOW_WIDTH - 2 * _TAB_PADDING - 10, 16),
+                        font_size=10.0,
+                        color=NSColor.tertiaryLabelColor(),
+                    )
+                    view.addSubview_(prompt_label)
+                    y -= 44
+                else:
+                    y -= 28
+
+        return view
+
+    # ------------------------------------------------------------------
+    # Vocabulary tab
+    # ------------------------------------------------------------------
+
+    def _build_vocabulary_tab(self) -> NSView:
+        """Build the Vocabulary tab showing hotwords and snippets."""
+        view = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, _WINDOW_WIDTH, _WINDOW_HEIGHT - 60)
+        )
+        content_height = _WINDOW_HEIGHT - 60
+        y = content_height - _TAB_PADDING
+
+        # Title
+        y -= _ROW_HEIGHT
+        title = self._make_section_label("Vocabulary & Snippets", y + 4)
+        view.addSubview_(title)
+
+        # Hotwords section
+        y -= 6
+        hw_label = self._make_label(
+            "ASR Hotwords (improve recognition of proper nouns)",
+            NSMakeRect(_TAB_PADDING, y - 12, _WINDOW_WIDTH - 2 * _TAB_PADDING, 16),
+            font_size=11.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        view.addSubview_(hw_label)
+        y -= 30
+
+        if self._vocabulary_manager:
+            for word in self._vocabulary_manager.get_hotwords():
+                w_label = self._make_label(
+                    word,
+                    NSMakeRect(_TAB_PADDING + 10, y, 300, 18),
+                    font_size=12.0,
+                )
+                view.addSubview_(w_label)
+                y -= 22
+
+        y -= 10
+
+        # Snippets section
+        sn_label = self._make_label(
+            "Snippets (auto-replace phrases)",
+            NSMakeRect(_TAB_PADDING, y, _WINDOW_WIDTH - 2 * _TAB_PADDING, 16),
+            font_size=11.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        view.addSubview_(sn_label)
+        y -= 25
+
+        if self._vocabulary_manager:
+            for trigger, replacement in self._vocabulary_manager.get_snippets().items():
+                s_label = self._make_label(
+                    f'"{trigger}" \u2192 "{replacement}"',
+                    NSMakeRect(_TAB_PADDING + 10, y, _WINDOW_WIDTH - 2 * _TAB_PADDING - 10, 18),
+                    font_size=12.0,
+                )
+                view.addSubview_(s_label)
+                y -= 22
+
+        return view
 
     # ------------------------------------------------------------------
     # Sync UI state from SettingsManager

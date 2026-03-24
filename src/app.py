@@ -95,15 +95,19 @@ class SafeVoiceApp(rumps.App):
         self._injector = TextInjector()
         self._hotkey = HotkeyManager()
         self._overlay = FloatingOverlay()
-        self._settings_window = SettingsWindow(self._settings)
-        self._dashboard = DashboardWindow(
-            self._settings,
-            on_open_settings=lambda: self._settings_window.show(),
-        )
         self._llm = LLMCleanup()
         self._history = HistoryStore()
         self._vocabulary = VocabularyManager()
         self._modes = ModeManager()
+        self._settings_window = SettingsWindow(
+            self._settings,
+            modes_manager=self._modes,
+            vocabulary_manager=self._vocabulary,
+        )
+        self._dashboard = DashboardWindow(
+            self._settings,
+            on_open_settings=lambda: self._settings_window.show(),
+        )
         self._active_mode = self._modes.get("Quick")
 
         # Audio buffer for batch transcription
