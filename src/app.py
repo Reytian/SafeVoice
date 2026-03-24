@@ -514,7 +514,7 @@ class SafeVoiceApp(rumps.App):
                 else:
                     logger.info("Batch transcription on %d samples...", len(full_audio))
                     cleaned = audio_preprocess.normalize_audio(full_audio)
-                    cleaned = audio_preprocess.vad_trim(cleaned)
+                    # Skip VAD trim — torch import takes 40-70s on first call
                     text, lang = self._asr.transcribe(cleaned)
                     logger.info("ASR result: %r (lang=%s)", text, lang)
 
