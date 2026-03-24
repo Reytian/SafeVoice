@@ -1,7 +1,8 @@
 """LLM backend abstraction for SafeVoice.
 
-Supports local (Ollama) and cloud (OpenAI, Anthropic, Google) backends
-behind a unified interface. Uses only stdlib urllib — no third-party HTTP libs.
+Supports local (Ollama) and cloud (OpenAI, Anthropic, Google, Zhipu, Moonshot,
+Dashscope, DeepSeek) backends behind a unified interface. Uses only stdlib
+urllib — no third-party HTTP libs.
 """
 
 import json
@@ -21,6 +22,28 @@ CLOUD_DEFAULTS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5-20251001",
     "google": "gemini-2.0-flash",
+    "zhipu": "glm-4-flash",
+    "moonshot": "moonshot-v1-8k",
+    "dashscope": "qwen-turbo",
+    "deepseek": "deepseek-chat",
+}
+
+# OpenAI-compatible providers (same request format, different base URL)
+OPENAI_COMPAT_PROVIDERS = {
+    "zhipu": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    "moonshot": "https://api.moonshot.cn/v1/chat/completions",
+    "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "deepseek": "https://api.deepseek.com/chat/completions",
+}
+
+LOCAL_MODEL_INSTALL_HINTS = {
+    "ollama": "Run in Terminal: ollama pull <model_name>\n\nPopular models:\n"
+              "  ollama pull qwen2.5:3b      (1.9 GB, fast)\n"
+              "  ollama pull qwen2.5:7b      (4.7 GB, better quality)\n"
+              "  ollama pull llama3.2:3b      (2.0 GB, fast)\n"
+              "  ollama pull gemma3:4b        (3.3 GB, good quality)\n"
+              "  ollama pull phi4-mini        (2.5 GB, fast)\n"
+              "  ollama pull mistral          (4.1 GB, good quality)",
 }
 
 
@@ -233,6 +256,23 @@ class CloudBackend(LLMBackend):
             }
             return url, headers, json.dumps(payload).encode()
 
+        elif self.provider in OPENAI_COMPAT_PROVIDERS:
+            url = OPENAI_COMPAT_PROVIDERS[self.provider]
+            headers = {
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                "temperature": 0.0,
+                "max_tokens": 512,
+            }
+            return url, headers, json.dumps(payload).encode()
+
         else:
             raise ValueError(f"Unsupported cloud provider: {self.provider}")
 
@@ -244,7 +284,7 @@ class CloudBackend(LLMBackend):
             data = json.loads(resp.read())
 
         # Extract text from provider-specific response format.
-        if self.provider == "openai":
+        if self.provider == "openai" or self.provider in OPENAI_COMPAT_PROVIDERS:
             text = data["choices"][0]["message"]["content"].strip()
         elif self.provider == "anthropic":
             text = data["content"][0]["text"].strip()
@@ -353,6 +393,25 @@ CLOUD_LLM_MODELS = {
     "google": [
         {"id": "gemini-2.0-flash", "name": "Gemini 2.0 Flash", "description": "Fast, free tier available"},
         {"id": "gemini-2.5-flash", "name": "Gemini 2.5 Flash", "description": "Latest, best quality"},
+    ],
+    "zhipu": [
+        {"id": "glm-4-flash", "name": "GLM-4 Flash", "description": "Fast, free tier, good for Chinese"},
+        {"id": "glm-4-plus", "name": "GLM-4 Plus", "description": "Higher quality, bilingual"},
+        {"id": "glm-4-long", "name": "GLM-4 Long", "description": "Long context support"},
+    ],
+    "moonshot": [
+        {"id": "moonshot-v1-8k", "name": "Kimi v1 8K", "description": "Fast, good for Chinese/English"},
+        {"id": "moonshot-v1-32k", "name": "Kimi v1 32K", "description": "Longer context"},
+        {"id": "moonshot-v1-128k", "name": "Kimi v1 128K", "description": "Very long context"},
+    ],
+    "dashscope": [
+        {"id": "qwen-turbo", "name": "Qwen Turbo", "description": "Fast, affordable"},
+        {"id": "qwen-plus", "name": "Qwen Plus", "description": "Better quality"},
+        {"id": "qwen-max", "name": "Qwen Max", "description": "Best quality"},
+    ],
+    "deepseek": [
+        {"id": "deepseek-chat", "name": "DeepSeek Chat", "description": "Fast, very affordable"},
+        {"id": "deepseek-reasoner", "name": "DeepSeek Reasoner", "description": "Chain-of-thought reasoning"},
     ],
 }
 
