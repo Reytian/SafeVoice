@@ -786,19 +786,18 @@ class SettingsWindow:
                 view.addSubview_(label)
 
                 btn_x = 220
-                # Edit button (not for Quick mode which has no prompt)
-                if mode.prompt_template is not None:
-                    edit_btn = NSButton.alloc().initWithFrame_(
-                        NSMakeRect(btn_x, y, 40, 20)
-                    )
-                    edit_btn.setTitle_("Edit")
-                    edit_btn.setBezelStyle_(0)
-                    edit_btn.setFont_(NSFont.systemFontOfSize_(11.0))
-                    target = self._make_mode_edit_target(mode.name)
-                    edit_btn.setTarget_(target)
-                    edit_btn.setAction_("invoke")
-                    view.addSubview_(edit_btn)
-                    btn_x += 45
+                # Edit button for all modes (including Quick)
+                edit_btn = NSButton.alloc().initWithFrame_(
+                    NSMakeRect(btn_x, y, 50, 20)
+                )
+                edit_btn.setTitle_("Edit")
+                edit_btn.setBezelStyle_(0)
+                edit_btn.setFont_(NSFont.systemFontOfSize_(11.0))
+                target = self._make_mode_edit_target(mode.name)
+                edit_btn.setTarget_(target)
+                edit_btn.setAction_("invoke")
+                view.addSubview_(edit_btn)
+                btn_x += 55
 
                 # Delete button (custom modes only)
                 if not mode.builtin:
@@ -1294,10 +1293,10 @@ class SettingsWindow:
 
         # --- Local panel ---
         self._local_panel = NSView.alloc().initWithFrame_(
-            NSMakeRect(_TAB_PADDING + 10, y - 150, _WINDOW_WIDTH - 2 * _TAB_PADDING - 20, 150)
+            NSMakeRect(_TAB_PADDING + 10, y - 210, _WINDOW_WIDTH - 2 * _TAB_PADDING - 20, 210)
         )
 
-        local_y = 126
+        local_y = 186
         self._local_panel.addSubview_(self._make_label(
             "Model:", NSMakeRect(0, local_y, 50, 22), font_size=12.0))
 
@@ -1311,15 +1310,80 @@ class SettingsWindow:
         refresh_btn.setBezelStyle_(NSBezelStyleRounded)
         refresh_btn.setFont_(NSFont.systemFontOfSize_(11.0))
         refresh_target = _SettingsCallbackTarget.alloc().initWithCallback_(
-            self._populate_local_models)
+            self._refresh_local_models)
         self._hotkey_delegates.append(refresh_target)
         refresh_btn.setTarget_(refresh_target)
         refresh_btn.setAction_("invoke")
         self._local_panel.addSubview_(refresh_btn)
 
+        # Download new model
+        local_y -= 28
+        dl_label = self._make_label("Download:", NSMakeRect(0, local_y, 65, 20), font_size=12.0)
+        self._local_panel.addSubview_(dl_label)
+
+        self._ollama_dl_field = NSTextField.alloc().initWithFrame_(NSMakeRect(70, local_y, 150, 22))
+        self._ollama_dl_field.setFont_(NSFont.systemFontOfSize_(11.0))
+        self._ollama_dl_field.setPlaceholderString_("e.g. qwen2.5:7b")
+        self._local_panel.addSubview_(self._ollama_dl_field)
+
+        dl_btn = NSButton.alloc().initWithFrame_(NSMakeRect(230, local_y, 70, 22))
+        dl_btn.setTitle_("Pull")
+        dl_btn.setBezelStyle_(1)
+
+        self._ollama_dl_status = self._make_label(
+            "", NSMakeRect(0, local_y - 22, 320, 18), font_size=10.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        self._local_panel.addSubview_(self._ollama_dl_status)
+
+        def _pull_model():
+            model_name = self._ollama_dl_field.stringValue().strip()
+            if not model_name:
+                return
+            self._ollama_dl_status.setStringValue_(f"Downloading {model_name}...")
+            import subprocess
+            def _do_pull():
+                try:
+                    result = subprocess.run(
+                        ["ollama", "pull", model_name],
+                        capture_output=True, text=True, timeout=600,
+                    )
+                    if result.returncode == 0:
+                        class _Refresher(NSObject):
+                            def refresh_(self_, sender):
+                                self._ollama_dl_status.setStringValue_(f"Done: {model_name}")
+                                self._ollama_dl_field.setStringValue_("")
+                                self._refresh_local_models()
+                        r = _Refresher.alloc().init()
+                        self._hotkey_delegates.append(r)
+                        r.performSelectorOnMainThread_withObject_waitUntilDone_("refresh:", None, False)
+                    else:
+                        err_msg = result.stderr[:60] if result.stderr else "unknown error"
+                        class _ErrUpdater(NSObject):
+                            def update_(self_, sender):
+                                self._ollama_dl_status.setStringValue_(f"Error: {err_msg}")
+                        u = _ErrUpdater.alloc().init()
+                        self._hotkey_delegates.append(u)
+                        u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+                except Exception as e:
+                    class _ExcUpdater(NSObject):
+                        def update_(self_, sender):
+                            self._ollama_dl_status.setStringValue_(f"Error: {e}")
+                    u = _ExcUpdater.alloc().init()
+                    self._hotkey_delegates.append(u)
+                    u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+            threading.Thread(target=_do_pull, daemon=True).start()
+
+        dl_target = _SettingsCallbackTarget.alloc().initWithCallback_(_pull_model)
+        self._hotkey_delegates.append(dl_target)
+        dl_btn.setTarget_(dl_target)
+        dl_btn.setAction_("invoke")
+        self._local_panel.addSubview_(dl_btn)
+        local_y -= 28
+
         local_info = self._make_label(
             "Local models keep your data private. No internet required.",
-            NSMakeRect(0, local_y - 22, 350, 18),
+            NSMakeRect(0, local_y - 2, 350, 18),
             font_size=10.0,
             color=NSColor.secondaryLabelColor(),
         )
@@ -1448,6 +1512,11 @@ class SettingsWindow:
         current = self._mgr.get("llm_local_model", "qwen2.5:3b")
         if current in models:
             self._local_model_popup.selectItemWithTitle_(current)
+
+    def _refresh_local_models(self):
+        """Refresh the Ollama model dropdown."""
+        if hasattr(self, '_local_model_popup') and self._local_model_popup:
+            self._populate_local_models()
 
     def _populate_cloud_models(self, provider):
         """Populate cloud model dropdown for the selected provider."""
