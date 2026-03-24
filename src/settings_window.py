@@ -41,6 +41,7 @@ from AppKit import (
     NSPopUpButton,
     NSTextView,
     NSPanel,
+    NSMenuItem,
 )
 from Foundation import NSMakeRect, NSMakePoint, NSObject, NSSize
 import objc
@@ -1233,94 +1234,98 @@ class SettingsWindow:
         y -= 24
 
         current_asr = self._mgr.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
-        self._asr_radio_buttons = []
-        self._asr_api_key_fields = {}  # model_id -> NSSecureTextField
+        self._asr_api_key_fields = {}  # model_id -> (NSSecureTextField, provider)
+        self._asr_models_ordered = []  # ordered list of model dicts matching dropdown
 
-        for model in ASR_MODELS:
-            is_current = model["id"] == current_asr
-            is_cloud = model["engine"].startswith("cloud")
+        # ASR model dropdown
+        view.addSubview_(self._make_label(
+            "Model:", NSMakeRect(_TAB_PADDING, y + 2, 50, 22), font_size=12.0))
+        self._asr_model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(_TAB_PADDING + 55, y, 280, 24), False)
+        self._asr_model_popup.setFont_(NSFont.systemFontOfSize_(12.0))
 
-            # Radio button for selection
-            radio = NSButton.alloc().initWithFrame_(NSMakeRect(_TAB_PADDING, y, 20, 20))
-            radio.setButtonType_(NSButtonTypeRadio)
-            radio.setTitle_("")
-            radio.setState_(1 if is_current else 0)
-            self._asr_radio_buttons.append((radio, model["id"]))
-            view.addSubview_(radio)
+        # Build dropdown items grouped by Local / Cloud
+        local_models = [m for m in ASR_MODELS if not m["engine"].startswith("cloud")]
+        cloud_models = [m for m in ASR_MODELS if m["engine"].startswith("cloud")]
 
-            if is_cloud:
-                # Cloud model: name only, no download status
-                name_label = self._make_label(
-                    f"{model['name']}" + (" (active)" if is_current else ""),
-                    NSMakeRect(_TAB_PADDING + 24, y, 260, 18), font_size=12.0,
-                )
-                if is_current:
-                    name_label.setFont_(NSFont.boldSystemFontOfSize_(12.0))
-                view.addSubview_(name_label)
-                y -= 20
+        # Add separator-style header for Local section
+        menu = self._asr_model_popup.menu()
 
-                # Details line
-                detail = f"{model['size']}  \u2022  {model['speed']}  \u2022  {model['accuracy']}"
-                detail_label = self._make_label(
-                    detail,
-                    NSMakeRect(_TAB_PADDING + 24, y, 280, 14), font_size=10.0,
-                    color=NSColor.secondaryLabelColor(),
-                )
-                view.addSubview_(detail_label)
-                y -= 16
+        local_header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("--- Local ---", None, "")
+        local_header.setEnabled_(False)
+        menu.addItem_(local_header)
+        self._asr_models_ordered.append(None)  # placeholder for header
 
-                # Description
-                desc_label = self._make_label(
-                    model["description"],
-                    NSMakeRect(_TAB_PADDING + 24, y, 280, 14), font_size=10.0,
-                    color=NSColor.tertiaryLabelColor(),
-                )
-                view.addSubview_(desc_label)
-                y -= 20
+        selected_idx = 0
+        for model in local_models:
+            downloaded = is_asr_model_downloaded(model["id"])
+            status = "downloaded" if downloaded else "not downloaded"
+            title = f"{model['name']} ({status})"
+            self._asr_model_popup.addItemWithTitle_(title)
+            self._asr_models_ordered.append(model)
+            if model["id"] == current_asr:
+                selected_idx = self._asr_model_popup.numberOfItems() - 1
 
-                # API key field for cloud ASR
-                view.addSubview_(self._make_label(
-                    "API Key:", NSMakeRect(_TAB_PADDING + 24, y, 55, 22), font_size=11.0))
-                api_field = NSSecureTextField.alloc().initWithFrame_(
-                    NSMakeRect(_TAB_PADDING + 82, y, 220, 22))
-                api_field.setFont_(NSFont.systemFontOfSize_(11.0))
-                # Derive provider name from engine (e.g. "cloud-openai" -> "openai")
-                asr_provider = model["engine"].replace("cloud-", "")
-                self._load_api_key(api_field, f"asr_{asr_provider}")
-                view.addSubview_(api_field)
-                self._asr_api_key_fields[model["id"]] = (api_field, asr_provider)
-                y -= 24
-            else:
-                # Local model: show download status
-                downloaded = is_asr_model_downloaded(model["id"])
-                status = " (active)" if is_current else (" (downloaded)" if downloaded else " (not downloaded)")
-                name_label = self._make_label(
-                    f"{model['name']}{status}",
-                    NSMakeRect(_TAB_PADDING + 24, y, 260, 18), font_size=12.0,
-                )
-                if is_current:
-                    name_label.setFont_(NSFont.boldSystemFontOfSize_(12.0))
-                view.addSubview_(name_label)
-                y -= 20
+        cloud_header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("--- Cloud ---", None, "")
+        cloud_header.setEnabled_(False)
+        menu.addItem_(cloud_header)
+        self._asr_models_ordered.append(None)  # placeholder for header
 
-                # Details line
-                detail = f"{model['size']}  \u2022  {model['speed']}  \u2022  {model['accuracy']}"
-                detail_label = self._make_label(
-                    detail,
-                    NSMakeRect(_TAB_PADDING + 24, y, 280, 14), font_size=10.0,
-                    color=NSColor.secondaryLabelColor(),
-                )
-                view.addSubview_(detail_label)
-                y -= 16
+        for model in cloud_models:
+            title = f"{model['name']}"
+            self._asr_model_popup.addItemWithTitle_(title)
+            self._asr_models_ordered.append(model)
+            if model["id"] == current_asr:
+                selected_idx = self._asr_model_popup.numberOfItems() - 1
 
-                # Description
-                desc_label = self._make_label(
-                    model["description"],
-                    NSMakeRect(_TAB_PADDING + 24, y, 280, 14), font_size=10.0,
-                    color=NSColor.tertiaryLabelColor(),
-                )
-                view.addSubview_(desc_label)
-                y -= 24
+        self._asr_model_popup.selectItemAtIndex_(selected_idx)
+
+        # Wire dropdown change to show/hide API key fields
+        asr_change_target = _SettingsCallbackTarget.alloc().initWithCallback_(
+            self._on_asr_model_changed)
+        self._hotkey_delegates.append(asr_change_target)
+        self._asr_model_popup.setTarget_(asr_change_target)
+        self._asr_model_popup.setAction_("invoke")
+        view.addSubview_(self._asr_model_popup)
+        y -= 24
+
+        # Description label (updated on selection change)
+        self._asr_desc_label = self._make_label(
+            "", NSMakeRect(_TAB_PADDING + 55, y, 280, 14), font_size=10.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        view.addSubview_(self._asr_desc_label)
+        y -= 18
+
+        # Detail label (size / speed / accuracy)
+        self._asr_detail_label = self._make_label(
+            "", NSMakeRect(_TAB_PADDING + 55, y, 280, 14), font_size=10.0,
+            color=NSColor.tertiaryLabelColor(),
+        )
+        view.addSubview_(self._asr_detail_label)
+        y -= 22
+
+        # Cloud ASR API key fields (one per cloud provider, shown/hidden)
+        self._asr_api_key_views = {}  # model_id -> (container_view, field, provider)
+        for model in cloud_models:
+            asr_provider = model["engine"].replace("cloud-", "")
+            key_view = NSView.alloc().initWithFrame_(
+                NSMakeRect(_TAB_PADDING + 55, y, 300, 24))
+            key_view.addSubview_(self._make_label(
+                "API Key:", NSMakeRect(0, 2, 55, 22), font_size=11.0))
+            api_field = NSSecureTextField.alloc().initWithFrame_(
+                NSMakeRect(58, 0, 220, 22))
+            api_field.setFont_(NSFont.systemFontOfSize_(11.0))
+            self._load_api_key(api_field, f"asr_{asr_provider}")
+            key_view.addSubview_(api_field)
+            key_view.setHidden_(True)
+            view.addSubview_(key_view)
+            self._asr_api_key_fields[model["id"]] = (api_field, asr_provider)
+            self._asr_api_key_views[model["id"]] = (key_view, api_field, asr_provider)
+
+        # Trigger initial description + API key visibility
+        self._on_asr_model_changed()
+        y -= 28
 
         # --- LLM section ---
         y -= _ROW_HEIGHT
@@ -1388,9 +1393,10 @@ class SettingsWindow:
         self._local_panel.addSubview_(refresh_btn)
 
         # Delete model button
-        del_model_btn = NSButton.alloc().initWithFrame_(NSMakeRect(335, local_y, 50, 24))
+        del_model_btn = NSButton.alloc().initWithFrame_(NSMakeRect(338, local_y, 60, 24))
         del_model_btn.setTitle_("Delete")
-        del_model_btn.setBezelStyle_(0)
+        del_model_btn.setBezelStyle_(1)  # NSBezelStyleRounded
+        del_model_btn.setContentTintColor_(NSColor.systemRedColor())
         del_model_btn.setFont_(NSFont.systemFontOfSize_(11.0))
 
         def _delete_model():
@@ -1401,6 +1407,8 @@ class SettingsWindow:
             model_name = model_name.split(" (")[0] if " (" in model_name else model_name
             import subprocess
             self._ollama_dl_status.setStringValue_(f"Deleting {model_name}...")
+            if hasattr(self, '_ollama_spinner') and self._ollama_spinner:
+                self._ollama_spinner.startAnimation_(None)
             def _do_delete():
                 try:
                     result = subprocess.run(
@@ -1409,10 +1417,12 @@ class SettingsWindow:
                     )
                     class _Refresher(NSObject):
                         def refresh_(self_, sender):
+                            if hasattr(self, '_ollama_spinner') and self._ollama_spinner:
+                                self._ollama_spinner.stopAnimation_(None)
                             if result.returncode == 0:
-                                self._ollama_dl_status.setStringValue_(f"Deleted {model_name}")
+                                self._ollama_dl_status.setStringValue_(f"\u2713 Deleted {model_name}")
                             else:
-                                self._ollama_dl_status.setStringValue_(f"Error: {result.stderr[:40]}")
+                                self._ollama_dl_status.setStringValue_(f"\u2717 Error: {result.stderr[:40]}")
                             self._refresh_local_models()
                     r = _Refresher.alloc().init()
                     self._hotkey_delegates.append(r)
@@ -1420,7 +1430,9 @@ class SettingsWindow:
                 except Exception as e:
                     class _ErrUpdater(NSObject):
                         def update_(self_, sender):
-                            self._ollama_dl_status.setStringValue_(f"Error: {e}")
+                            if hasattr(self, '_ollama_spinner') and self._ollama_spinner:
+                                self._ollama_spinner.stopAnimation_(None)
+                            self._ollama_dl_status.setStringValue_(f"\u2717 Error: {e}")
                     u = _ErrUpdater.alloc().init()
                     self._hotkey_delegates.append(u)
                     u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
@@ -1450,9 +1462,10 @@ class SettingsWindow:
             self._ollama_dl_popup.addItemWithTitle_(m)
         self._local_panel.addSubview_(self._ollama_dl_popup)
 
-        dl_btn = NSButton.alloc().initWithFrame_(NSMakeRect(230, local_y, 70, 22))
+        dl_btn = NSButton.alloc().initWithFrame_(NSMakeRect(230, local_y, 70, 24))
         dl_btn.setTitle_("Pull")
-        dl_btn.setBezelStyle_(1)
+        dl_btn.setBezelStyle_(1)  # NSBezelStyleRounded
+        dl_btn.setFont_(NSFont.systemFontOfSize_(11.0))
 
         self._ollama_dl_status = self._make_label(
             "", NSMakeRect(0, local_y - 22, 320, 18), font_size=10.0,
@@ -1495,7 +1508,7 @@ class SettingsWindow:
                         class _ErrUpdater(NSObject):
                             def update_(self_, sender):
                                 self._ollama_spinner.stopAnimation_(None)
-                                self._ollama_dl_status.setStringValue_(f"Error: {err_msg}")
+                                self._ollama_dl_status.setStringValue_(f"\u2717 Error: {err_msg}")
                         u = _ErrUpdater.alloc().init()
                         self._hotkey_delegates.append(u)
                         u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
@@ -1503,7 +1516,7 @@ class SettingsWindow:
                     class _ExcUpdater(NSObject):
                         def update_(self_, sender):
                             self._ollama_spinner.stopAnimation_(None)
-                            self._ollama_dl_status.setStringValue_(f"Error: {e}")
+                            self._ollama_dl_status.setStringValue_(f"\u2717 Error: {e}")
                     u = _ExcUpdater.alloc().init()
                     self._hotkey_delegates.append(u)
                     u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
@@ -1611,6 +1624,29 @@ class SettingsWindow:
         view.scrollPoint_(NSMakePoint(0, inner_height - tab_height))
         return scroll
 
+    def _on_asr_model_changed(self):
+        """Handle ASR model dropdown change -- update description and API key visibility."""
+        idx = self._asr_model_popup.indexOfSelectedItem()
+        if idx < 0 or idx >= len(self._asr_models_ordered):
+            return
+        model = self._asr_models_ordered[idx]
+        if model is None:
+            return  # header item
+
+        # Update description and detail labels
+        self._asr_desc_label.setStringValue_(model.get("description", ""))
+        detail = f"{model['size']}  \u2022  {model['speed']}  \u2022  {model['accuracy']}"
+        self._asr_detail_label.setStringValue_(detail)
+
+        # Show/hide API key fields
+        is_cloud = model["engine"].startswith("cloud")
+        for mid, (key_view, _, _) in self._asr_api_key_views.items():
+            key_view.setHidden_(mid != model["id"])
+        # If not cloud, hide all
+        if not is_cloud:
+            for mid, (key_view, _, _) in self._asr_api_key_views.items():
+                key_view.setHidden_(True)
+
     def _make_llm_source_target(self, source_value: str):
         """Create a target for LLM source radio buttons."""
         def callback():
@@ -1639,9 +1675,27 @@ class SettingsWindow:
             self._local_model_popup.selectItemWithTitle_(current)
 
     def _refresh_local_models(self):
-        """Refresh the Ollama model dropdown."""
+        """Refresh the Ollama model dropdown, preserving the current selection."""
         if hasattr(self, '_local_model_popup') and self._local_model_popup:
-            self._populate_local_models()
+            # Remember current selection
+            current = self._local_model_popup.titleOfSelectedItem()
+            current_model = current.split(" (")[0] if current and " (" in current else current
+
+            self._local_model_popup.removeAllItems()
+            models = OllamaBackend.list_models()
+            if not models:
+                self._local_model_popup.addItemWithTitle_("(no models found)")
+            else:
+                for m in models:
+                    self._local_model_popup.addItemWithTitle_(m)
+
+            # Restore selection
+            if current_model:
+                for i in range(self._local_model_popup.numberOfItems()):
+                    title = self._local_model_popup.itemAtIndex_(i).title()
+                    if title.startswith(current_model):
+                        self._local_model_popup.selectItemAtIndex_(i)
+                        break
 
     def _populate_cloud_models(self, provider):
         """Populate cloud model dropdown for the selected provider."""
@@ -1665,12 +1719,13 @@ class SettingsWindow:
 
     def _apply_models_settings(self):
         """Save all Models tab settings and invoke the change callback."""
-        # Save selected ASR model
-        if hasattr(self, '_asr_radio_buttons'):
-            for radio, model_id in self._asr_radio_buttons:
-                if radio.state() == NSOnState:
-                    self._mgr.set("asr_model", model_id)
-                    break
+        # Save selected ASR model from dropdown
+        if hasattr(self, '_asr_model_popup') and self._asr_model_popup:
+            idx = self._asr_model_popup.indexOfSelectedItem()
+            if 0 <= idx < len(self._asr_models_ordered):
+                model = self._asr_models_ordered[idx]
+                if model is not None:
+                    self._mgr.set("asr_model", model["id"])
 
         # Save cloud ASR API keys
         if hasattr(self, '_asr_api_key_fields'):
