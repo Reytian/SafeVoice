@@ -391,27 +391,6 @@ class FloatingOverlay:
         content_view.addSubview_(self._dot_label)
         x_cursor += _DOT_SIZE + _ELEMENT_SPACING
 
-        # --- State badge (AI/OK) ---
-        badge_x = _HORIZONTAL_PADDING + _DOT_SIZE + 2
-        badge_y = (_PANEL_HEIGHT - 16) / 2
-        self._badge_label = NSTextField.alloc().initWithFrame_(NSMakeRect(badge_x, badge_y, 24, 16))
-        self._badge_label.setStringValue_("")
-        self._badge_label.setFont_(NSFont.boldSystemFontOfSize_(9))
-        self._badge_label.setBezeled_(False)
-        self._badge_label.setDrawsBackground_(True)
-        self._badge_label.setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
-        )
-        self._badge_label.setTextColor_(NSColor.whiteColor())
-        self._badge_label.setAlignment_(NSTextAlignmentCenter)
-        self._badge_label.setHidden_(True)
-        self._badge_label.setEditable_(False)
-        self._badge_label.setSelectable_(False)
-        self._badge_label.setWantsLayer_(True)
-        self._badge_label.layer().setCornerRadius_(4)
-        self._badge_label.layer().setMasksToBounds_(True)
-        content_view.addSubview_(self._badge_label)
-
         # --- Language badge ---
         badge_y = (_PANEL_HEIGHT - 20.0) / 2.0
         self._language_label = self._make_label(
@@ -429,6 +408,27 @@ class FloatingOverlay:
         self._language_label.layer().setCornerRadius_(4.0)
         content_view.addSubview_(self._language_label)
         x_cursor += _BADGE_WIDTH + _ELEMENT_SPACING
+
+        # --- State badge (AI/OK) — after language badge, hidden by default ---
+        state_badge_y = (_PANEL_HEIGHT - 16) / 2
+        self._badge_label = NSTextField.alloc().initWithFrame_(NSMakeRect(x_cursor, state_badge_y, 24, 16))
+        self._badge_label.setStringValue_("")
+        self._badge_label.setFont_(NSFont.boldSystemFontOfSize_(9))
+        self._badge_label.setBezeled_(False)
+        self._badge_label.setDrawsBackground_(True)
+        self._badge_label.setBackgroundColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
+        )
+        self._badge_label.setTextColor_(NSColor.whiteColor())
+        self._badge_label.setAlignment_(NSTextAlignmentCenter)
+        self._badge_label.setHidden_(True)
+        self._badge_label.setEditable_(False)
+        self._badge_label.setSelectable_(False)
+        self._badge_label.setWantsLayer_(True)
+        self._badge_label.layer().setCornerRadius_(4)
+        self._badge_label.layer().setMasksToBounds_(True)
+        content_view.addSubview_(self._badge_label)
+        # Don't advance x_cursor — badge overlaps text area when shown, text shifts isn't needed
 
         # --- Transcription text ---
         text_width = _PANEL_MIN_WIDTH - x_cursor - _HORIZONTAL_PADDING
