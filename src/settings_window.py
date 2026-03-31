@@ -1384,13 +1384,25 @@ class SettingsWindow:
         # Source toggle radio buttons
         current_source = self._mgr.get("llm_source", "local")
 
-        source_group_y = y - 2 * _ROW_HEIGHT
+        source_group_y = y - 3 * _ROW_HEIGHT
         source_group = NSView.alloc().initWithFrame_(
-            NSMakeRect(_TAB_PADDING + 10, source_group_y, 300, 2 * _ROW_HEIGHT)
+            NSMakeRect(_TAB_PADDING + 10, source_group_y, 300, 3 * _ROW_HEIGHT)
         )
 
+        self._llm_mlx_btn = NSButton.alloc().initWithFrame_(
+            NSMakeRect(0, 2 * _ROW_HEIGHT, 200, _ROW_HEIGHT)
+        )
+        self._llm_mlx_btn.setButtonType_(NSButtonTypeRadio)
+        self._llm_mlx_btn.setTitle_("MLX (Native, fastest)")
+        self._llm_mlx_btn.setFont_(NSFont.systemFontOfSize_(13.0))
+        self._llm_mlx_btn.setState_(NSOnState if current_source == "mlx" else NSOffState)
+        mlx_target = self._make_llm_source_target("mlx")
+        self._llm_mlx_btn.setTarget_(mlx_target)
+        self._llm_mlx_btn.setAction_("invoke")
+        source_group.addSubview_(self._llm_mlx_btn)
+
         self._llm_local_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(0, _ROW_HEIGHT, 160, _ROW_HEIGHT)
+            NSMakeRect(0, _ROW_HEIGHT, 200, _ROW_HEIGHT)
         )
         self._llm_local_btn.setButtonType_(NSButtonTypeRadio)
         self._llm_local_btn.setTitle_("Local (Ollama)")
@@ -1402,7 +1414,7 @@ class SettingsWindow:
         source_group.addSubview_(self._llm_local_btn)
 
         self._llm_cloud_btn = NSButton.alloc().initWithFrame_(
-            NSMakeRect(0, 0, 160, _ROW_HEIGHT)
+            NSMakeRect(0, 0, 200, _ROW_HEIGHT)
         )
         self._llm_cloud_btn.setButtonType_(NSButtonTypeRadio)
         self._llm_cloud_btn.setTitle_("Cloud API")
@@ -1414,7 +1426,7 @@ class SettingsWindow:
         source_group.addSubview_(self._llm_cloud_btn)
 
         view.addSubview_(source_group)
-        y -= 2 * _ROW_HEIGHT + 10
+        y -= 3 * _ROW_HEIGHT + 10
 
         # --- Local panel ---
         self._local_panel = NSView.alloc().initWithFrame_(
@@ -1588,6 +1600,42 @@ class SettingsWindow:
 
         view.addSubview_(self._local_panel)
 
+        # --- MLX panel ---
+        self._mlx_panel = NSView.alloc().initWithFrame_(
+            NSMakeRect(_TAB_PADDING + 10, y - 210, _WINDOW_WIDTH - 2 * _TAB_PADDING - 20, 210)
+        )
+
+        mlx_y = 186
+        self._mlx_panel.addSubview_(self._make_label(
+            "Model:", NSMakeRect(0, mlx_y, 50, 22), font_size=12.0))
+
+        self._mlx_model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(55, mlx_y, 280, 24), False)
+        _mlx_models = [
+            ("mlx-community/Qwen3.5-4B-4bit", "Qwen3.5 4B (2.3 GB, fast)"),
+            ("mlx-community/Qwen3.5-9B-4bit", "Qwen3.5 9B (5.5 GB, better)"),
+            ("mlx-community/Qwen3.5-0.8B-4bit", "Qwen3.5 0.8B (0.5 GB, fastest)"),
+        ]
+        self._mlx_model_ids = [m[0] for m in _mlx_models]
+        for _, display in _mlx_models:
+            self._mlx_model_popup.addItemWithTitle_(display)
+        current_mlx = self._mgr.get("llm_mlx_model", "mlx-community/Qwen3.5-4B-4bit")
+        if current_mlx in self._mlx_model_ids:
+            self._mlx_model_popup.selectItemAtIndex_(self._mlx_model_ids.index(current_mlx))
+        self._mlx_panel.addSubview_(self._mlx_model_popup)
+
+        mlx_y -= 28
+        mlx_info = self._make_label(
+            "Native MLX: fastest, no Ollama needed. Model downloads on first use.",
+            NSMakeRect(0, mlx_y, 380, 18),
+            font_size=10.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        self._mlx_panel.addSubview_(mlx_info)
+
+        self._mlx_panel.setHidden_(current_source != "mlx")
+        view.addSubview_(self._mlx_panel)
+
         # --- Cloud panel ---
         self._cloud_panel = NSView.alloc().initWithFrame_(
             NSMakeRect(_TAB_PADDING + 10, y - 50, _WINDOW_WIDTH - 2 * _TAB_PADDING - 20, 50)
@@ -1633,6 +1681,7 @@ class SettingsWindow:
         view.addSubview_(self._cloud_panel)
 
         # Show/hide panels based on current source
+        self._mlx_panel.setHidden_(current_source != "mlx")
         self._local_panel.setHidden_(current_source != "local")
         self._cloud_panel.setHidden_(current_source != "cloud")
 
@@ -1699,12 +1748,13 @@ class SettingsWindow:
     def _make_llm_source_target(self, source_value: str):
         """Create a target for LLM source radio buttons."""
         def callback():
-            is_local = source_value == "local"
-            self._llm_local_btn.setState_(NSOnState if is_local else NSOffState)
-            self._llm_cloud_btn.setState_(NSOffState if is_local else NSOnState)
-            self._local_panel.setHidden_(not is_local)
-            self._cloud_panel.setHidden_(is_local)
-            self._cloud_info_label.setHidden_(is_local)
+            self._llm_mlx_btn.setState_(NSOnState if source_value == "mlx" else NSOffState)
+            self._llm_local_btn.setState_(NSOnState if source_value == "local" else NSOffState)
+            self._llm_cloud_btn.setState_(NSOnState if source_value == "cloud" else NSOffState)
+            self._mlx_panel.setHidden_(source_value != "mlx")
+            self._local_panel.setHidden_(source_value != "local")
+            self._cloud_panel.setHidden_(source_value != "cloud")
+            self._cloud_info_label.setHidden_(source_value != "cloud")
         target = _SettingsCallbackTarget.alloc().initWithCallback_(callback)
         self._hotkey_delegates.append(target)
         return target
@@ -1783,11 +1833,19 @@ class SettingsWindow:
                 if api_key:
                     self._save_api_key(f"asr_{asr_provider}", api_key)
 
-        is_local = self._llm_local_btn.state() == NSOnState
-        source = "local" if is_local else "cloud"
+        if self._llm_mlx_btn.state() == NSOnState:
+            source = "mlx"
+        elif self._llm_local_btn.state() == NSOnState:
+            source = "local"
+        else:
+            source = "cloud"
         self._mgr.set("llm_source", source)
 
-        if is_local:
+        if source == "mlx":
+            mlx_idx = self._mlx_model_popup.indexOfSelectedItem()
+            if 0 <= mlx_idx < len(self._mlx_model_ids):
+                self._mgr.set("llm_mlx_model", self._mlx_model_ids[mlx_idx])
+        elif source == "local":
             model_title = self._local_model_popup.titleOfSelectedItem()
             if model_title and model_title != "(no models found)":
                 self._mgr.set("llm_local_model", model_title)
