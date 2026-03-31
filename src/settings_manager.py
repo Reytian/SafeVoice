@@ -57,6 +57,7 @@ _DEFAULTS: Dict[str, Any] = {
     # LLM backend settings
     "llm_source": "local",
     "llm_local_model": "qwen2.5:3b",
+    "llm_mlx_model": "mlx-community/Qwen3.5-4B-4bit",
     "llm_cloud_provider": "openai",
     "llm_cloud_model": "gpt-4o-mini",
     "translation_language": "English",
