@@ -351,10 +351,11 @@ class SafeVoiceApp(rumps.App):
                 cloud_api_key = creds.get(cloud_provider, "")
         except Exception:
             pass
+        mlx_model = self._settings.get("llm_mlx_model", "mlx-community/Qwen3.5-4B-4bit")
         return get_backend(
             source=source, local_model=local_model,
             cloud_provider=cloud_provider, cloud_model=cloud_model,
-            cloud_api_key=cloud_api_key,
+            cloud_api_key=cloud_api_key, mlx_model=mlx_model,
         )
 
     def _on_llm_change(self):

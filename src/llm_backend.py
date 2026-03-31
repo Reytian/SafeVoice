@@ -1,8 +1,7 @@
 """LLM backend abstraction for SafeVoice.
 
-Supports local (Ollama) and cloud (OpenAI, Anthropic, Google, Zhipu, Moonshot,
-Dashscope, DeepSeek) backends behind a unified interface. Uses only stdlib
-urllib — no third-party HTTP libs.
+Supports local (MLX native, Ollama) and cloud (OpenAI, Anthropic, Google,
+Zhipu, Moonshot, Dashscope, DeepSeek) backends behind a unified interface.
 """
 
 import json
@@ -16,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_BASE = "http://localhost:11434"
 DEFAULT_LOCAL_MODEL = "qwen2.5:3b"
+DEFAULT_MLX_MODEL = "mlx-community/Qwen3.5-4B-4bit"
 
 # Default model per cloud provider.
 CLOUD_DEFAULTS = {
@@ -176,6 +176,72 @@ class OllamaBackend(LLMBackend):
             return []
 
 
+class MLXBackend(LLMBackend):
+    """Native MLX backend — loads model in-process via mlx-lm."""
+
+    def __init__(self, model: str = DEFAULT_MLX_MODEL) -> None:
+        self.model_id = model
+        self._model = None
+        self._tokenizer = None
+        self._available: Optional[bool] = None
+
+    @property
+    def name(self) -> str:
+        short = self.model_id.split("/")[-1] if "/" in self.model_id else self.model_id
+        return f"MLX ({short})"
+
+    def is_available(self) -> bool:
+        if self._available is True:
+            return True
+        try:
+            import mlx_lm  # noqa: F401
+            self._available = True
+            return True
+        except ImportError:
+            self._available = False
+            return False
+
+    def warm_up(self) -> None:
+        if not self.is_available():
+            return
+        if self._model is not None:
+            return
+        try:
+            from mlx_lm import load
+            logger.info("Loading MLX model: %s", self.model_id)
+            self._model, self._tokenizer = load(self.model_id)
+            logger.info("MLX model loaded: %s", self.model_id)
+        except Exception as e:
+            logger.warning("MLX model load failed: %s", e)
+            self._available = False
+
+    def chat(self, system_prompt: str, user_message: str) -> str:
+        if self._model is None:
+            self.warm_up()
+        if self._model is None:
+            raise RuntimeError("MLX model not loaded")
+
+        from mlx_lm import generate
+
+        prompt = self._tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        result = generate(
+            self._model,
+            self._tokenizer,
+            prompt=prompt,
+            max_tokens=512,
+            temp=0.0,
+        )
+        return _strip_think_tags(result.strip())
+
+
 class CloudBackend(LLMBackend):
     """Cloud LLM backend (OpenAI, Anthropic, Google)."""
 
@@ -302,15 +368,18 @@ def get_backend(
     cloud_provider: str = "openai",
     cloud_model: str = "",
     cloud_api_key: str = "",
+    mlx_model: str = DEFAULT_MLX_MODEL,
 ) -> LLMBackend:
     """Factory: return the appropriate backend based on *source*.
 
     Args:
-        source: ``"local"`` for Ollama, ``"cloud"`` for a cloud provider.
+        source: ``"local"`` for Ollama, ``"mlx"`` for native MLX,
+                ``"cloud"`` for a cloud provider.
         local_model: Ollama model name (only used when source is ``"local"``).
         cloud_provider: One of ``"openai"``, ``"anthropic"``, ``"google"``.
         cloud_model: Model identifier (defaults per provider if empty).
         cloud_api_key: API key for the cloud provider.
+        mlx_model: HuggingFace model ID for MLX (only when source is ``"mlx"``).
     """
     if source == "cloud":
         return CloudBackend(
@@ -318,6 +387,8 @@ def get_backend(
             model=cloud_model,
             api_key=cloud_api_key,
         )
+    if source == "mlx":
+        return MLXBackend(model=mlx_model)
     return OllamaBackend(model=local_model)
 
 
