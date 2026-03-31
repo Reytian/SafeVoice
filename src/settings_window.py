@@ -1692,8 +1692,9 @@ class SettingsWindow:
         mlx_dl_btn.setBezelStyle_(1)
         mlx_dl_btn.setFont_(NSFont.systemFontOfSize_(11.0))
 
+        mlx_y -= 24
         self._mlx_status = self._make_label(
-            "", NSMakeRect(0, mlx_y - 22, 380, 18), font_size=10.0,
+            "", NSMakeRect(0, mlx_y, 380, 18), font_size=10.0,
             color=NSColor.secondaryLabelColor(),
         )
         self._mlx_panel.addSubview_(self._mlx_status)
@@ -1731,7 +1732,7 @@ class SettingsWindow:
         mlx_dl_btn.setAction_("invoke")
         self._mlx_panel.addSubview_(mlx_dl_btn)
 
-        mlx_y -= 28
+        mlx_y -= 22
         mlx_info = self._make_label(
             "Native MLX: fastest inference, no Ollama needed. Runs entirely on Apple Silicon.",
             NSMakeRect(0, mlx_y, 400, 18),
