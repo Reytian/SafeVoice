@@ -1606,28 +1606,135 @@ class SettingsWindow:
         )
 
         mlx_y = 186
+
+        # Downloaded models dropdown
         self._mlx_panel.addSubview_(self._make_label(
             "Model:", NSMakeRect(0, mlx_y, 50, 22), font_size=12.0))
 
         self._mlx_model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(55, mlx_y, 280, 24), False)
-        _mlx_models = [
-            ("mlx-community/Qwen3.5-4B-4bit", "Qwen3.5 4B (2.3 GB, fast)"),
-            ("mlx-community/Qwen3.5-9B-4bit", "Qwen3.5 9B (5.5 GB, better)"),
-            ("mlx-community/Qwen3.5-0.8B-4bit", "Qwen3.5 0.8B (0.5 GB, fastest)"),
-        ]
-        self._mlx_model_ids = [m[0] for m in _mlx_models]
-        for _, display in _mlx_models:
-            self._mlx_model_popup.addItemWithTitle_(display)
-        current_mlx = self._mgr.get("llm_mlx_model", "mlx-community/Qwen3.5-4B-4bit")
-        if current_mlx in self._mlx_model_ids:
-            self._mlx_model_popup.selectItemAtIndex_(self._mlx_model_ids.index(current_mlx))
+            NSMakeRect(55, mlx_y, 200, 24), False)
+        self._populate_mlx_models()
         self._mlx_panel.addSubview_(self._mlx_model_popup)
+
+        # Refresh button
+        mlx_refresh_btn = NSButton.alloc().initWithFrame_(NSMakeRect(260, mlx_y, 70, 24))
+        mlx_refresh_btn.setTitle_("Refresh")
+        mlx_refresh_btn.setBezelStyle_(NSBezelStyleRounded)
+        mlx_refresh_btn.setFont_(NSFont.systemFontOfSize_(11.0))
+        mlx_refresh_target = _SettingsCallbackTarget.alloc().initWithCallback_(
+            self._refresh_mlx_models)
+        self._hotkey_delegates.append(mlx_refresh_target)
+        mlx_refresh_btn.setTarget_(mlx_refresh_target)
+        mlx_refresh_btn.setAction_("invoke")
+        self._mlx_panel.addSubview_(mlx_refresh_btn)
+
+        # Delete button
+        mlx_del_btn = NSButton.alloc().initWithFrame_(NSMakeRect(338, mlx_y, 60, 24))
+        mlx_del_btn.setTitle_("Delete")
+        mlx_del_btn.setBezelStyle_(1)
+        mlx_del_btn.setContentTintColor_(NSColor.systemRedColor())
+        mlx_del_btn.setFont_(NSFont.systemFontOfSize_(11.0))
+
+        def _delete_mlx_model():
+            model_id = self._get_selected_mlx_model_id()
+            if not model_id:
+                return
+            self._mlx_status.setStringValue_(f"Deleting {model_id.split('/')[-1]}...")
+            import shutil
+            def _do_delete():
+                try:
+                    from pathlib import Path
+                    safe_id = model_id.replace("/", "--")
+                    cache_dir = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{safe_id}"
+                    if cache_dir.exists():
+                        shutil.rmtree(cache_dir)
+                    class _Refresher(NSObject):
+                        def refresh_(self_, sender):
+                            self._mlx_status.setStringValue_(f"\u2713 Deleted")
+                            self._refresh_mlx_models()
+                    r = _Refresher.alloc().init()
+                    self._hotkey_delegates.append(r)
+                    r.performSelectorOnMainThread_withObject_waitUntilDone_("refresh:", None, False)
+                except Exception as e:
+                    class _Err(NSObject):
+                        def update_(self_, sender):
+                            self._mlx_status.setStringValue_(f"\u2717 Error: {e}")
+                    u = _Err.alloc().init()
+                    self._hotkey_delegates.append(u)
+                    u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+            threading.Thread(target=_do_delete, daemon=True).start()
+
+        mlx_del_target = _SettingsCallbackTarget.alloc().initWithCallback_(_delete_mlx_model)
+        self._hotkey_delegates.append(mlx_del_target)
+        mlx_del_btn.setTarget_(mlx_del_target)
+        mlx_del_btn.setAction_("invoke")
+        self._mlx_panel.addSubview_(mlx_del_btn)
+
+        # Download section
+        mlx_y -= 28
+        self._mlx_panel.addSubview_(self._make_label(
+            "Download:", NSMakeRect(0, mlx_y, 70, 22), font_size=12.0))
+
+        self._mlx_dl_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(75, mlx_y, 210, 24), False)
+        _mlx_available = [
+            "mlx-community/Qwen3.5-0.8B-4bit",
+            "mlx-community/Qwen3.5-4B-4bit",
+            "mlx-community/Qwen3.5-9B-4bit",
+        ]
+        for m in _mlx_available:
+            self._mlx_dl_popup.addItemWithTitle_(m.split("/")[-1])
+        self._mlx_dl_model_ids = _mlx_available
+        self._mlx_panel.addSubview_(self._mlx_dl_popup)
+
+        mlx_dl_btn = NSButton.alloc().initWithFrame_(NSMakeRect(290, mlx_y, 80, 24))
+        mlx_dl_btn.setTitle_("Download")
+        mlx_dl_btn.setBezelStyle_(1)
+        mlx_dl_btn.setFont_(NSFont.systemFontOfSize_(11.0))
+
+        self._mlx_status = self._make_label(
+            "", NSMakeRect(0, mlx_y - 22, 380, 18), font_size=10.0,
+            color=NSColor.secondaryLabelColor(),
+        )
+        self._mlx_panel.addSubview_(self._mlx_status)
+
+        def _download_mlx_model():
+            idx = self._mlx_dl_popup.indexOfSelectedItem()
+            if idx < 0 or idx >= len(self._mlx_dl_model_ids):
+                return
+            model_id = self._mlx_dl_model_ids[idx]
+            short = model_id.split("/")[-1]
+            self._mlx_status.setStringValue_(f"Downloading {short}...")
+            def _do_download():
+                try:
+                    from huggingface_hub import snapshot_download
+                    snapshot_download(model_id)
+                    class _Done(NSObject):
+                        def done_(self_, sender):
+                            self._mlx_status.setStringValue_(f"\u2713 {short} downloaded!")
+                            self._refresh_mlx_models()
+                    d = _Done.alloc().init()
+                    self._hotkey_delegates.append(d)
+                    d.performSelectorOnMainThread_withObject_waitUntilDone_("done:", None, False)
+                except Exception as e:
+                    class _Err(NSObject):
+                        def update_(self_, sender):
+                            self._mlx_status.setStringValue_(f"\u2717 Error: {str(e)[:50]}")
+                    u = _Err.alloc().init()
+                    self._hotkey_delegates.append(u)
+                    u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+            threading.Thread(target=_do_download, daemon=True).start()
+
+        mlx_dl_target = _SettingsCallbackTarget.alloc().initWithCallback_(_download_mlx_model)
+        self._hotkey_delegates.append(mlx_dl_target)
+        mlx_dl_btn.setTarget_(mlx_dl_target)
+        mlx_dl_btn.setAction_("invoke")
+        self._mlx_panel.addSubview_(mlx_dl_btn)
 
         mlx_y -= 28
         mlx_info = self._make_label(
-            "Native MLX: fastest, no Ollama needed. Model downloads on first use.",
-            NSMakeRect(0, mlx_y, 380, 18),
+            "Native MLX: fastest inference, no Ollama needed. Runs entirely on Apple Silicon.",
+            NSMakeRect(0, mlx_y, 400, 18),
             font_size=10.0,
             color=NSColor.secondaryLabelColor(),
         )
@@ -1759,6 +1866,49 @@ class SettingsWindow:
         self._hotkey_delegates.append(target)
         return target
 
+    def _get_selected_mlx_model_id(self) -> str:
+        """Get the HuggingFace model ID for the currently selected MLX model."""
+        title = self._mlx_model_popup.titleOfSelectedItem()
+        if not title or title.startswith("("):
+            return ""
+        # Match by short name
+        for mid in getattr(self, '_mlx_downloaded_ids', []):
+            if mid.split("/")[-1] in title or title in mid:
+                return mid
+        return ""
+
+    def _populate_mlx_models(self):
+        """Populate MLX model dropdown with downloaded models."""
+        self._mlx_model_popup.removeAllItems()
+        from pathlib import Path
+        cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+        self._mlx_downloaded_ids = []
+        if cache_dir.is_dir():
+            for d in sorted(cache_dir.iterdir()):
+                if d.name.startswith("models--mlx-community--"):
+                    model_id = d.name.replace("models--", "").replace("--", "/")
+                    # Check if it has actual model files
+                    snapshots = d / "snapshots"
+                    if snapshots.is_dir() and any(snapshots.iterdir()):
+                        short = model_id.split("/")[-1]
+                        self._mlx_model_popup.addItemWithTitle_(short)
+                        self._mlx_downloaded_ids.append(model_id)
+        if not self._mlx_downloaded_ids:
+            self._mlx_model_popup.addItemWithTitle_("(no models downloaded)")
+        else:
+            current = self._mgr.get("llm_mlx_model", "mlx-community/Qwen3.5-4B-4bit")
+            if current in self._mlx_downloaded_ids:
+                short = current.split("/")[-1]
+                self._mlx_model_popup.selectItemWithTitle_(short)
+
+    def _refresh_mlx_models(self):
+        """Refresh the MLX model dropdown."""
+        if hasattr(self, '_mlx_model_popup') and self._mlx_model_popup:
+            current = self._mlx_model_popup.titleOfSelectedItem()
+            self._populate_mlx_models()
+            if current:
+                self._mlx_model_popup.selectItemWithTitle_(current)
+
     def _populate_local_models(self):
         """Populate the local model dropdown from Ollama."""
         self._local_model_popup.removeAllItems()
@@ -1842,9 +1992,9 @@ class SettingsWindow:
         self._mgr.set("llm_source", source)
 
         if source == "mlx":
-            mlx_idx = self._mlx_model_popup.indexOfSelectedItem()
-            if 0 <= mlx_idx < len(self._mlx_model_ids):
-                self._mgr.set("llm_mlx_model", self._mlx_model_ids[mlx_idx])
+            model_id = self._get_selected_mlx_model_id()
+            if model_id:
+                self._mgr.set("llm_mlx_model", model_id)
         elif source == "local":
             model_title = self._local_model_popup.titleOfSelectedItem()
             if model_title and model_title != "(no models found)":
