@@ -11,10 +11,13 @@ import logging
 import sys
 import traceback
 
-# Set up file logging so crashes are captured even if stdout is eaten by rumps
+# Set up file logging so crashes are captured even if stdout is eaten by rumps.
+# Append mode: a duplicate launch (which exits via single_instance check) must
+# not truncate the running instance's log. Also preserves history across
+# normal restarts, which helps diagnose overnight crashes.
 logging.basicConfig(
     filename="/tmp/safevoice.log",
-    filemode="w",
+    filemode="a",
     level=logging.DEBUG,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )

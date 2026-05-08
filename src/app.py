@@ -17,6 +17,11 @@ import sys
 
 import numpy as np
 import objc
+from Foundation import (
+    NSActivityLatencyCritical,
+    NSActivityUserInitiatedAllowingIdleSystemSleep,
+    NSProcessInfo,
+)
 
 logger = logging.getLogger(__name__)
 import rumps
@@ -31,11 +36,16 @@ from .settings_window import SettingsWindow
 from . import audio_preprocess
 from .dashboard_window import DashboardWindow
 from .llm_cleanup import LLMCleanup
+from .text_postprocess import strip_filler_words
 from .history import HistoryStore
 from .vocabulary import VocabularyManager
 from .modes import ModeManager
 from .setup_wizard import SetupWizard
 from .llm_backend import get_backend
+from .single_instance import (
+    install_show_settings_listener,
+    is_duplicate_and_signal_existing,
+)
 
 
 # Language definitions -- "Auto" first so it is the default.
@@ -80,6 +90,23 @@ class SafeVoiceApp(rumps.App):
             title="SV" if icon_path is None else None,
             icon=icon_path,
             quit_button=None,
+        )
+
+        # Opt out of App Nap so the menubar listener and CGEventTap stay
+        # responsive after long idle periods. The token MUST be retained on
+        # the instance: NSProcessInfo ends the activity when the token is
+        # released. UserInitiatedAllowingIdleSystemSleep keeps us latency-
+        # sensitive while still letting the Mac sleep on its normal schedule.
+        self._app_nap_token = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+            NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical,
+            "SafeVoice hotkey listener",
+        )
+
+        # Listen for "show settings" pings from a second-launched instance
+        # (the duplicate posts the notification then exits in main()). Must
+        # retain the observer on the instance or PyObjC will GC it.
+        self._show_settings_observer = install_show_settings_listener(
+            self._show_settings_from_duplicate
         )
 
         # State
@@ -268,7 +295,7 @@ class SafeVoiceApp(rumps.App):
                     print("[SafeVoice] LLM ready")
                     logger.info("LLM model warmed up and ready")
                 else:
-                    print("[SafeVoice] LLM cleanup unavailable (install Ollama + qwen3:1.7b)")
+                    print("[SafeVoice] LLM cleanup unavailable (install Ollama + `ollama pull qwen2.5:3b`)")
                     logger.warning("LLM cleanup unavailable")
             except Exception as e:
                 self._set_state(STATE_IDLE)
@@ -437,6 +464,17 @@ class SafeVoiceApp(rumps.App):
         """Open the settings window."""
         self._settings_window.show()
 
+    def _show_settings_from_duplicate(self):
+        """Open the settings window in response to a second-launched instance.
+
+        Invoked on the main thread by the NSDistributedNotification observer
+        installed in __init__. Calling settings_window.show() also activates
+        the app and orders the window front, so the user gets visible
+        feedback that their second double-click was received.
+        """
+        logger.info("Received show-settings ping from a duplicate launch")
+        self._settings_window.show()
+
     def _set_state(self, state):
         """Update app state and UI."""
         self._state = state
@@ -593,8 +631,27 @@ class SafeVoiceApp(rumps.App):
                             print(f"[SafeVoice] LLM: {text!r} -> {cleaned!r}")
                             text = cleaned
                             self._overlay.update_text(text)
-                    elif not is_long_enough:
-                        logger.info("Skipping LLM for short text: %r", stripped)
+                    else:
+                        # No LLM step ran -- either text too short for the
+                        # LLM gate, or no LLM backend is available. Still
+                        # apply the deterministic filler strip so "嗯对" ->
+                        # "对" and "um yes" -> "yes" instead of pasting raw
+                        # ASR with all hesitations intact.
+                        if not is_long_enough:
+                            logger.info(
+                                "Skipping LLM for short text: %r", stripped
+                            )
+                        else:
+                            logger.info(
+                                "LLM unavailable; using rule-strip only"
+                            )
+                        rule_cleaned = strip_filler_words(text)
+                        if rule_cleaned != text:
+                            logger.info(
+                                "Rule-strip: %r -> %r", text, rule_cleaned
+                            )
+                            text = rule_cleaned
+                            self._overlay.update_text(text)
                     # Hide overlay BEFORE paste so it doesn't steal focus
                     time.sleep(0.05)
                     self._overlay.hide()
@@ -676,6 +733,9 @@ class SafeVoiceApp(rumps.App):
     def _on_quit(self, _):
         """Clean up and quit."""
         print("[SafeVoice] Quitting...")
+        if self._app_nap_token is not None:
+            NSProcessInfo.processInfo().endActivity_(self._app_nap_token)
+            self._app_nap_token = None
         self._hotkey.stop()
         if self._audio.is_recording:
             self._audio.stop()
@@ -690,6 +750,14 @@ def main():
     print("SafeVoice - Voice Input for macOS")
     print("=" * 50)
     print()
+
+    # Single-instance enforcement. If another SafeVoice.app is already
+    # running, ask it to show its settings window (so the user gets visible
+    # feedback that we noticed the duplicate launch) and exit ourselves.
+    # Without this guard, two processes register competing CGEventTaps and
+    # the ASR model loads twice, doubling RAM.
+    if is_duplicate_and_signal_existing():
+        return
 
     # Check model availability
     if not ASREngine.is_model_downloaded():

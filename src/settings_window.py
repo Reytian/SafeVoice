@@ -47,7 +47,25 @@ from Foundation import NSMakeRect, NSMakePoint, NSObject, NSSize
 import objc
 
 from .settings_manager import SettingsManager, SUPPORTED_LANGUAGES
-from .llm_backend import OllamaBackend, CLOUD_DEFAULTS, ASR_MODELS, CLOUD_LLM_MODELS, is_asr_model_downloaded
+from .llm_backend import (
+    OllamaBackend,
+    CLOUD_DEFAULTS,
+    ASR_MODELS,
+    CLOUD_LLM_MODELS,
+    is_asr_model_downloaded,
+    is_reasoning_model,
+)
+
+
+def _decorate_local_model_label(name: str) -> str:
+    """Append a '(not recommended)' suffix to reasoning-tuned models in
+    the dropdown so users can still see what's installed without being
+    silently steered to a model that produces 20-30 s of latency per
+    cleanup. The runtime guard in llm_cleanup.py still catches the bad
+    output, but warning here saves the user a confusing first run."""
+    if is_reasoning_model(name):
+        return f"{name}  (not recommended)"
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -1512,12 +1530,23 @@ class SettingsWindow:
 
         self._ollama_dl_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
             NSMakeRect(70, local_y, 155, 22), False)
+        # Curated list of instruction-tuned models suitable for dictation
+        # cleanup. Reasoning-tuned models (qwen3:*, deepseek-r1:*, marco-o1,
+        # any *-o1 / *-r1) are intentionally excluded — they dump 500-900
+        # tokens of "let me think about this..." into the response even with
+        # think:false set, which makes dictation cleanup take 20-30 s and
+        # produce reasoning prose where you want clean text. The runaway-
+        # length guard in llm_cleanup.py would catch the bad output but the
+        # user still pays the latency. Better to not offer them at all.
         _popular_models = [
-            "qwen3:4b", "qwen3:8b", "qwen3:14b",
-            "qwen2.5:3b", "qwen2.5:7b",
-            "llama3.2:3b", "llama3.2:8b",
-            "gemma3:4b", "phi4-mini",
-            "mistral", "deepseek-r1:7b",
+            "qwen2.5:3b",      # recommended: 1.9 GB, fast, strong CJK
+            "qwen2.5:7b",      # higher quality: 4.7 GB, ~2-3 s/call
+            "qwen2.5:1.5b",    # smallest qwen: 986 MB, very fast
+            "gemma3:4b",       # Google, 3.3 GB, solid multilingual
+            "gemma3:1b",       # tiny Google: 815 MB
+            "llama3.2:3b",     # 2 GB, English-strong, weaker on CJK
+            "phi4-mini",       # Microsoft, 2.5 GB, multilingual
+            "mistral",         # classic all-rounder: 4.1 GB
         ]
         for m in _popular_models:
             self._ollama_dl_popup.addItemWithTitle_(m)
@@ -1918,11 +1947,16 @@ class SettingsWindow:
             self._local_model_popup.addItemWithTitle_("(no models found)")
         else:
             for m in models:
-                self._local_model_popup.addItemWithTitle_(m)
-        # Select current setting
+                self._local_model_popup.addItemWithTitle_(
+                    _decorate_local_model_label(m)
+                )
+        # Select current setting (label may carry a "(not recommended)"
+        # suffix, so match by prefix instead of exact title).
         current = self._mgr.get("llm_local_model", "qwen2.5:3b")
         if current in models:
-            self._local_model_popup.selectItemWithTitle_(current)
+            self._local_model_popup.selectItemWithTitle_(
+                _decorate_local_model_label(current)
+            )
 
     def _refresh_local_models(self):
         """Refresh the Ollama model dropdown, preserving the current selection."""
@@ -1937,7 +1971,9 @@ class SettingsWindow:
                 self._local_model_popup.addItemWithTitle_("(no models found)")
             else:
                 for m in models:
-                    self._local_model_popup.addItemWithTitle_(m)
+                    self._local_model_popup.addItemWithTitle_(
+                        _decorate_local_model_label(m)
+                    )
 
             # Restore selection
             if current_model:
@@ -1999,7 +2035,10 @@ class SettingsWindow:
         elif source == "local":
             model_title = self._local_model_popup.titleOfSelectedItem()
             if model_title and model_title != "(no models found)":
-                self._mgr.set("llm_local_model", model_title)
+                # Strip any "(not recommended)" / "(size info)" suffix the
+                # dropdown decorator may have added before persisting.
+                model_id = model_title.split("  (")[0].split(" (")[0]
+                self._mgr.set("llm_local_model", model_id)
         else:
             provider_title = self._cloud_provider_popup.titleOfSelectedItem()
             provider = _PROVIDER_REVERSE.get(provider_title, provider_title.lower())

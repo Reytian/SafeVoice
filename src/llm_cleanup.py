@@ -10,6 +10,7 @@ import threading
 from typing import Optional
 
 from .llm_backend import LLMBackend, OllamaBackend
+from .text_postprocess import strip_filler_words
 
 logger = logging.getLogger(__name__)
 
@@ -18,23 +19,50 @@ You are a dictation text editor. You receive raw speech transcription and output
 
 Rules you MUST follow:
 1. PRESERVE the original language. If input is Chinese, output Chinese. If English, output English. NEVER translate.
-2. Remove filler words: um, uh, like, you know, I mean, 嗯, 那个, 就是, 然后, 对, 这个, 啊, 所以说
-3. Handle self-corrections: keep ONLY the final intent. "Tuesday no wait Wednesday" -> "Wednesday"
-4. Remove stuttering: "I I want" -> "I want"
+2. Remove filler words. Common ones:
+     English: um, uh, er, ah, erm, hmm, like, you know, I mean, sort of, kind of, basically, literally, well, so (when used as a filler), right
+     Chinese: 嗯, 啊, 呃, 哦, 哎, 唉, 那个, 这个, 就是, 然后, 对, 所以说, 对吧, 怎么说呢, 你知道, 我跟你讲
+   Be context-aware: "这个产品" keeps 这个 (meaningful demonstrative); "这个，就是，我想说" drops 这个 and 就是 (filler usage).
+3. Handle self-corrections — KEEP ONLY THE FINAL INTENT, drop the corrected-away part entirely.
+   Recognize correction markers: "no wait", "I mean", "sorry", "啊不对", "不对不对", "不是", "应该是", "我是说", "等等", "哦不是", "改一下".
+   The corrected-away element is removed completely; the replacement stays.
+4. Remove stuttering: "I I want" -> "I want", "我我想" -> "我想"
 5. Fix grammar, spelling, capitalization, and punctuation
 6. Merge broken sentence fragments: "这个。新的。并不能用。" -> "这个新的并不能用。"
-7. Keep ALL information and meaning — do NOT drop or summarize content
+7. Keep ALL information and meaning — do NOT drop or summarize content. Self-correction removal is NOT summarization; it's removing a slip the speaker openly retracted.
 8. Output ONLY the cleaned text. No explanations, no labels, no quotes.
 
 Examples:
+
 User: 这个。新的功能。并不能用。
 Assistant: 这个新的功能并不能用。
 
 User: 嗯那个就是我想说一下就是这个项目然后需要在下周五之前完成
 Assistant: 我想说一下，这个项目需要在下周五之前完成。
 
+User: 今天下午五点，啊，不对，六点开会
+Assistant: 今天下午六点开会。
+
+User: 他叫张明，不对，叫张亮
+Assistant: 他叫张亮。
+
+User: 我们去星巴克，呃，麦当劳吧
+Assistant: 我们去麦当劳吧。
+
+User: 明天，哦不是，是后天我们见面
+Assistant: 后天我们见面。
+
+User: 我想订三张票，不对不对，是四张
+Assistant: 我想订四张票。
+
+User: 明天上午，等等，下午三点
+Assistant: 明天下午三点。
+
 User: um so like I was thinking that we should you know meet on Tuesday no wait Wednesday at like 2 PM to discuss the uh the budget
-Assistant: I was thinking that we should meet on Wednesday at 2 PM to discuss the budget."""
+Assistant: I was thinking that we should meet on Wednesday at 2 PM to discuss the budget.
+
+User: send it to John, sorry I mean Jane
+Assistant: Send it to Jane."""
 
 
 _CJK_RE = re.compile(
@@ -130,8 +158,14 @@ class LLMCleanup:
         if not raw_text.strip():
             return raw_text
 
+        # Always run the deterministic filler-word strip first. This both
+        # cleans short/skipped-LLM cases and reduces the token surface the
+        # LLM sees on the longer path. Self-corrections are intentionally
+        # NOT handled here -- the LLM does that with semantic context.
+        pre_cleaned = strip_filler_words(raw_text)
+
         if not self.is_available():
-            return raw_text
+            return pre_cleaned
 
         if custom_prompt:
             try:
@@ -144,23 +178,43 @@ class LLMCleanup:
                     return result
             except Exception as e:
                 logger.warning("Custom LLM cleanup failed: %s", e)
-            return raw_text
+            # Custom-prompt path failed: still return the rule-stripped text
+            # rather than the truly raw one; user always gets fillers removed.
+            return pre_cleaned
 
         try:
-            cleaned = self._backend.chat(SYSTEM_PROMPT, raw_text)
+            cleaned = self._backend.chat(SYSTEM_PROMPT, pre_cleaned)
 
             if cleaned:
                 # Guard: reject if LLM changed the script (translated)
-                if _script_changed(raw_text, cleaned):
+                if _script_changed(pre_cleaned, cleaned):
                     logger.warning(
                         "LLM cleanup rejected (translation detected): %r -> %r",
                         raw_text, cleaned,
                     )
-                    return raw_text
+                    return pre_cleaned
+                # Guard: reject runaway-length output. Cleanup should make
+                # text shorter or roughly the same length, never much
+                # longer. Reasoning-tuned models (e.g. qwen3:4b) often dump
+                # 500+ tokens of "let me think about this..." prose into
+                # the content field even with think:false set; that's not
+                # a cleanup, it's a takeover. Heuristic: 2x length AND a
+                # floor of +60 chars excess catches reasoning leakage
+                # without false-positiving on legitimate punctuation /
+                # capitalization additions.
+                if len(cleaned) > 2 * len(pre_cleaned) + 60:
+                    logger.warning(
+                        "LLM cleanup rejected (runaway length, likely "
+                        "reasoning leak from a thinking-tuned model): "
+                        "%d-char input -> %d-char output. Falling back "
+                        "to rule-stripped text.",
+                        len(pre_cleaned), len(cleaned),
+                    )
+                    return pre_cleaned
                 logger.info("LLM cleanup: %r -> %r", raw_text, cleaned)
                 return cleaned
 
         except Exception as e:
             logger.warning("LLM cleanup failed: %s", e)
 
-        return raw_text
+        return pre_cleaned
