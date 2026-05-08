@@ -341,6 +341,21 @@ class HotkeyManager:
 
     def _cg_event_callback(self, proxy, event_type, event, refcon):
         """Handle CGEvent events for the activation hotkey."""
+        # macOS auto-disables event taps after sleep/wake or a slow callback,
+        # delivering kCGEventTapDisabledByTimeout / kCGEventTapDisabledByUserInput
+        # regardless of the registered event mask. Without re-enabling the
+        # tap here, the activation hotkey silently dies until the app restarts.
+        if event_type in (
+            Quartz.kCGEventTapDisabledByTimeout,
+            Quartz.kCGEventTapDisabledByUserInput,
+        ):
+            logger.warning(
+                "CGEventTap disabled (type=0x%x). Re-enabling.", event_type
+            )
+            if self._cg_tap is not None:
+                Quartz.CGEventTapEnable(self._cg_tap, True)
+            return event
+
         flags = Quartz.CGEventGetFlags(event)
 
         if event_type == Quartz.kCGEventFlagsChanged:

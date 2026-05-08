@@ -37,14 +37,40 @@ OPENAI_COMPAT_PROVIDERS = {
 }
 
 LOCAL_MODEL_INSTALL_HINTS = {
-    "ollama": "Run in Terminal: ollama pull <model_name>\n\nPopular models:\n"
-              "  ollama pull qwen2.5:3b      (1.9 GB, fast)\n"
-              "  ollama pull qwen2.5:7b      (4.7 GB, better quality)\n"
-              "  ollama pull llama3.2:3b      (2.0 GB, fast)\n"
-              "  ollama pull gemma3:4b        (3.3 GB, good quality)\n"
-              "  ollama pull phi4-mini        (2.5 GB, fast)\n"
-              "  ollama pull mistral          (4.1 GB, good quality)",
+    "ollama": (
+        "Run in Terminal: ollama pull <model_name>\n\n"
+        "Recommended (instruction-tuned, good for dictation cleanup):\n"
+        "  ollama pull qwen2.5:3b      (1.9 GB, fast, strong CJK -- recommended)\n"
+        "  ollama pull qwen2.5:7b      (4.7 GB, higher quality)\n"
+        "  ollama pull qwen2.5:1.5b    (986 MB, smallest qwen)\n"
+        "  ollama pull gemma3:4b       (3.3 GB, Google multilingual)\n"
+        "  ollama pull gemma3:1b       (815 MB, tiny + fast)\n"
+        "  ollama pull llama3.2:3b     (2.0 GB, English-strong)\n"
+        "  ollama pull phi4-mini       (2.5 GB, Microsoft multilingual)\n"
+        "  ollama pull mistral         (4.1 GB, classic all-rounder)\n\n"
+        "Avoid reasoning-tuned models (qwen3:*, deepseek-r1:*, marco-o1, qwq:*) "
+        "-- they dump 500-900 tokens of \"let me think...\" prose per cleanup, "
+        "adding 20-30 s latency for no benefit."
+    ),
 }
+
+# Reasoning-tuned model families. Excluded from the SafeVoice download
+# dropdown and warned-about if a user has one already installed and tries
+# to select it. The runaway-length guard in llm_cleanup.py is the runtime
+# safety net, but the right move is to never let users pick these in the
+# first place since the latency cost is real even when the output is good.
+KNOWN_REASONING_MODELS = (
+    "qwen3",         # qwen3:4b, qwen3:8b, qwen3:14b, qwen3-coder, ...
+    "deepseek-r1",   # the -r1 suffix means reasoning
+    "marco-o1",
+    "qwq",           # Qwen-with-Questions
+)
+
+
+def is_reasoning_model(model: str) -> bool:
+    """Return True if the model name matches a known reasoning family."""
+    name = (model or "").lower()
+    return any(name.startswith(prefix) for prefix in KNOWN_REASONING_MODELS)
 
 
 def _strip_think_tags(text: str) -> str:
@@ -56,6 +82,25 @@ def _strip_think_tags(text: str) -> str:
         return text[idx + len("</think>"):].strip()
     # No closing tag — strip from <think> onward
     return text[:text.find("<think>")].strip()
+
+
+def _directive_for_model(model: str) -> str:
+    """Return a model-specific system-prompt suffix that disables verbose
+    reasoning, or an empty string for models without such a directive.
+
+    Models known to honor a no-thinking directive:
+      Qwen3 family (qwen3, qwen3-coder, qwen3.5, qwen3.6, ...)
+        responds to '/no_think' appended to the system or user message.
+        Without this, every cleanup call burns 300-800 thinking tokens
+        and 5-15 seconds of latency.
+
+    Returns the leading-space version so it concatenates safely:
+        system + _directive_for_model(model)
+    """
+    name = (model or "").lower()
+    if name.startswith("qwen3"):
+        return " /no_think"
+    return ""
 
 
 class LLMBackend:
@@ -142,7 +187,18 @@ class OllamaBackend(LLMBackend):
             logger.warning("LLM warm-up failed: %s", e)
 
     def chat(self, system_prompt: str, user_message: str) -> str:
-        """Send a chat request to Ollama and return the cleaned reply."""
+        """Send a chat request to Ollama and return the cleaned reply.
+
+        For models with toggleable reasoning (Qwen3 family supports
+        `/no_think`) we append the directive so the model returns its
+        answer directly without 500+ tokens of internal monologue.
+        _strip_think_tags drops <think>...</think> blocks if any leak
+        through, but the real win is preventing those tokens from being
+        generated at all — a 4B model thinking for 10 s before answering
+        "OK" is the difference between a snappy dictation app and a
+        sluggish one.
+        """
+        system_prompt = system_prompt + _directive_for_model(self.model)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -151,6 +207,10 @@ class OllamaBackend(LLMBackend):
             "model": self.model,
             "messages": messages,
             "stream": False,
+            # think:false disables internal reasoning for thinking-capable
+            # models on Ollama 0.4+. Older Ollama / non-thinking models
+            # ignore the field, so it's safe to always send.
+            "think": False,
             "options": {"temperature": 0.0, "num_predict": 512, "top_p": 0.9},
         }).encode()
         req = urllib.request.Request(
@@ -159,7 +219,7 @@ class OllamaBackend(LLMBackend):
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
             result = data["message"]["content"].strip()
             return _strip_think_tags(result)
