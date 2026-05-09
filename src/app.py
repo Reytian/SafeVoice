@@ -112,11 +112,19 @@ class SafeVoiceApp(rumps.App):
         # State
         self._state = STATE_IDLE
         self._language_index = 0
-        self._mode = "push_to_talk"  # or "toggle"
 
         # Settings (load saved preferences)
         self._settings = SettingsManager()
         self._settings.register_callback(self._on_setting_changed)
+
+        # Read recording mode from persisted settings. Defaults to
+        # push_to_talk for first-run users; once the user picks toggle
+        # mode (via menubar Mode submenu or settings window) it is saved
+        # and used on every subsequent launch.
+        saved_mode = self._settings.get("mode", "push_to_talk")
+        if saved_mode not in ("push_to_talk", "toggle"):
+            saved_mode = "push_to_talk"
+        self._mode = saved_mode
 
         # Components
         self._audio = AudioCapture(sample_rate=16000, channels=1, blocksize=1024)
@@ -187,17 +195,20 @@ class SafeVoiceApp(rumps.App):
                 item.state = True
             self._lang_menu.add(item)
 
-        # Mode submenu
+        # Mode submenu. Checkmarks reflect the persisted setting loaded
+        # in __init__ so users see their saved choice on every launch
+        # (and not always "Hold to Talk" by default).
         self._mode_menu = rumps.MenuItem("Mode")
         self._ptt_item = rumps.MenuItem(
             "Hold to Talk (Recommended)",
             callback=self._set_push_to_talk,
         )
-        self._ptt_item.state = True
         self._toggle_item = rumps.MenuItem(
-            "Toggle On/Off",
+            "Toggle On/Off (click to start, click to stop)",
             callback=self._set_toggle_mode,
         )
+        self._ptt_item.state = (self._mode == "push_to_talk")
+        self._toggle_item.state = (self._mode == "toggle")
         self._mode_menu.add(self._ptt_item)
         self._mode_menu.add(self._toggle_item)
 
@@ -218,8 +229,11 @@ class SafeVoiceApp(rumps.App):
         # Settings
         settings_item = rumps.MenuItem("Settings...", callback=self._open_settings)
 
-        # Hotkey info
-        hotkey_info = rumps.MenuItem("Hotkey: Left \u2325 (Left Option)", callback=None)
+        # Hotkey info -- text is mode-aware so users see how the current
+        # mode actually behaves. Updated by _refresh_hotkey_info_label
+        # whenever mode changes.
+        self._hotkey_info_item = rumps.MenuItem("", callback=None)
+        self._refresh_hotkey_info_label()
 
         # Quit
         quit_item = rumps.MenuItem("Quit SafeVoice", callback=self._on_quit)
@@ -234,7 +248,7 @@ class SafeVoiceApp(rumps.App):
             dashboard_item,
             settings_item,
             None,
-            hotkey_info,
+            self._hotkey_info_item,
             None,
             quit_item,
         ]
@@ -263,18 +277,44 @@ class SafeVoiceApp(rumps.App):
         print(f"[SafeVoice] Language: {lang['name']}")
 
     def _set_push_to_talk(self, _):
-        """Switch to push-to-talk mode."""
+        """Switch to push-to-talk mode and persist the choice."""
         self._mode = "push_to_talk"
         self._ptt_item.state = True
         self._toggle_item.state = False
         self._hotkey.set_mode("push_to_talk")
+        self._settings.set("mode", "push_to_talk")
+        self._refresh_hotkey_info_label()
 
     def _set_toggle_mode(self, _):
-        """Switch to toggle mode."""
+        """Switch to toggle mode and persist the choice.
+
+        Toggle mode: press the hotkey once to START recording, press it
+        again to STOP and transcribe. Useful for longer dictations where
+        holding the key is uncomfortable.
+        """
         self._mode = "toggle"
         self._ptt_item.state = False
         self._toggle_item.state = True
         self._hotkey.set_mode("toggle")
+        self._settings.set("mode", "toggle")
+        self._refresh_hotkey_info_label()
+
+    def _refresh_hotkey_info_label(self):
+        """Update the menubar's Hotkey info line to match current mode.
+
+        Hold-to-talk mode reads as "Hold Left ⌥"; toggle mode reads as
+        "Press Left ⌥ to start, again to stop" so users understand the
+        new behavior without checking docs. Called from __init__ (initial
+        state) and both _set_*_mode handlers.
+        """
+        if not hasattr(self, "_hotkey_info_item"):
+            return
+        if self._mode == "toggle":
+            self._hotkey_info_item.title = (
+                "Hotkey: Press Left ⌥ to start, again to stop"
+            )
+        else:
+            self._hotkey_info_item.title = "Hotkey: Hold Left ⌥ (Left Option)"
 
     def _start_model_load(self):
         """Load the ASR model in a background thread."""
