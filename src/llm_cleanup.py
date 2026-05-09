@@ -29,6 +29,8 @@ R4. NEVER paraphrase or rephrase. Preserve the exact wording, word choice, and c
 
 R5. NEVER drop information. Modal verbs (需要 / 应该 / 必须 / can / should / must / will), tense markers, and quantifiers all carry meaning. Keep them.
 
+R6. NEVER drop preambles, scene-setting, or self-narration as if they were filler. "我尝试多录几句话" / "我现在测试一下" / "I want to say something" / "let me try this" are CONTENT, not throat-clearing. The user dictated them deliberately. Keep them. The only things you may drop are pure hesitation sounds (E1) and the corrected-away half of an explicit self-correction (E4).
+
 EDITS YOU MAY MAKE (and nothing else):
 
 E1. Remove pure hesitation sounds: um, uh, er, ah, hmm, 嗯, 啊, 呃, 哦, 哎, 唉.
@@ -47,6 +49,15 @@ Assistant: 这个新的功能并不能用。
 
 User: 嗯那个就是我想说一下就是这个项目然后需要在下周五之前完成
 Assistant: 我想说一下，这个项目需要在下周五之前完成。
+
+User: 哎，我尝试多录几句话，随便写一段中文，测试一下。
+Assistant: 我尝试多录几句话，随便写一段中文，测试一下。
+
+User: 我现在测试一下啊嗯然后我说一段话看看效果怎么样
+Assistant: 我现在测试一下，然后我说一段话看看效果怎么样。
+
+User: let me try this um I want to record a few sentences and see how it looks
+Assistant: Let me try this. I want to record a few sentences and see how it looks.
 
 User: 今天下午五点，啊，不对，六点开会
 Assistant: 今天下午六点开会。
@@ -85,6 +96,56 @@ Assistant: I was thinking we should meet on Wednesday at 2 PM."""
 _CJK_RE = re.compile(
     r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]"
 )
+
+# Phrases the speaker might use to openly retract something they just said.
+# When any of these are present in the input, a large length drop in the
+# LLM output is legitimate (the retracted clause was correctly removed).
+# When NONE of these are present, a large length drop almost always means
+# the LLM treated meaningful content as filler/preamble and discarded it,
+# which is a content-deletion failure we reject below.
+_CORRECTION_MARKERS = (
+    "\u554a\u4e0d\u5bf9", "\u4e0d\u5bf9\u4e0d\u5bf9", "\u54e6\u4e0d\u662f", "\u6211\u662f\u8bf4", "\u5e94\u8be5\u662f", "\u7b49\u7b49", "\u6539\u4e00\u4e0b",
+    "\u6211\u8bf4\u9519\u4e86", "\u4e0d\u662f\u8bf4", "\u4e0d\u5bf9\uff0c",
+    "no wait", "i mean", "sorry,", "sorry i", "scratch that", "actually no",
+)
+
+
+def _has_correction_marker(text: str) -> bool:
+    """Cheap check: does this text contain a self-correction marker?"""
+    if not text:
+        return False
+    lower = text.lower()
+    return any(m in lower if " " in m or m.isascii() else m in text
+               for m in _CORRECTION_MARKERS)
+
+
+def _dropped_too_much(input_text: str, output_text: str) -> bool:
+    """Detect over-deletion: LLM output is much shorter than input without
+    any self-correction marker that would justify the drop.
+
+    The single failure mode this catches: user dictates a multi-clause
+    sentence ("\u54ce\uff0c\u6211\u5c1d\u8bd5\u591a\u5f55\u51e0\u53e5\u8bdd\uff0c\u968f\u4fbf\u5199\u4e00\u6bb5\u4e2d\u6587\uff0c\u6d4b\u8bd5\u4e00\u4e0b\u3002") and the
+    LLM treats the first clause as throat-clearing and drops it
+    ("\u968f\u4fbf\u5199\u4e00\u6bb5\u4e2d\u6587\uff0c\u6d4b\u8bd5\u4e00\u4e0b\u3002"). Filler-only stripping never produces
+    a drop this large; self-correction does, but always with a marker in
+    the input.
+
+    Thresholds chosen so the four legitimate big-drop few-shots all pass:
+      "\u4e94\u70b9\uff0c\u554a\uff0c\u4e0d\u5bf9\uff0c\u516d\u70b9" (10) -> "\u516d\u70b9\u3002" (3) \u2014 has "\u4e0d\u5bf9\uff0c" marker
+      "\u6211\u60f3\u8ba2\u4e09\u5f20\u7968\uff0c\u4e0d\u5bf9\u4e0d\u5bf9\uff0c\u662f\u56db\u5f20" -> "\u6211\u60f3\u8ba2\u56db\u5f20\u7968" \u2014 has "\u4e0d\u5bf9\u4e0d\u5bf9"
+      "send it to John, sorry I mean Jane" -> "Send it to Jane" \u2014 has "i mean"
+    while the deletion case is caught:
+      "\u54ce\uff0c\u6211\u5c1d\u8bd5\u591a\u5f55\u51e0\u53e5\u8bdd\uff0c\u968f\u4fbf\u5199\u4e00\u6bb5\u4e2d\u6587..." -> "\u968f\u4fbf\u5199\u4e00\u6bb5\u4e2d\u6587..." \u2014 no marker, ratio 0.54
+    """
+    in_len = len(input_text.strip())
+    out_len = len(output_text.strip())
+    if in_len < 10:
+        return False
+    ratio = out_len / in_len
+    drop = in_len - out_len
+    if ratio < 0.6 and drop > 10 and not _has_correction_marker(input_text):
+        return True
+    return False
 
 
 def _script_changed(input_text: str, output_text: str) -> bool:
@@ -215,10 +276,7 @@ class LLMCleanup:
                 # longer. Reasoning-tuned models (e.g. qwen3:4b) often dump
                 # 500+ tokens of "let me think about this..." prose into
                 # the content field even with think:false set; that's not
-                # a cleanup, it's a takeover. Heuristic: 2x length AND a
-                # floor of +60 chars excess catches reasoning leakage
-                # without false-positiving on legitimate punctuation /
-                # capitalization additions.
+                # a cleanup, it's a takeover.
                 if len(cleaned) > 2 * len(pre_cleaned) + 60:
                     logger.warning(
                         "LLM cleanup rejected (runaway length, likely "
@@ -226,6 +284,22 @@ class LLMCleanup:
                         "%d-char input -> %d-char output. Falling back "
                         "to rule-stripped text.",
                         len(pre_cleaned), len(cleaned),
+                    )
+                    return pre_cleaned
+                # Guard: reject over-deletion. If output dropped > 40% of
+                # input length without any self-correction marker, the LLM
+                # treated meaningful content as filler -- e.g. "哎，我尝试多
+                # 录几句话，随便写一段中文，测试一下" was being collapsed
+                # to "随便写一段中文，测试一下" because the model decided
+                # the first clause was preamble. Self-corrections (which
+                # legitimately drop a lot) always carry a marker in the
+                # input and are exempt.
+                if _dropped_too_much(pre_cleaned, cleaned):
+                    logger.warning(
+                        "LLM cleanup rejected (over-deletion, no self-"
+                        "correction marker in input): %r -> %r. Falling "
+                        "back to rule-stripped text.",
+                        raw_text, cleaned,
                     )
                     return pre_cleaned
                 logger.info("LLM cleanup: %r -> %r", raw_text, cleaned)
