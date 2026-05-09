@@ -278,12 +278,18 @@ class SafeVoiceApp(rumps.App):
 
     def _set_push_to_talk(self, _):
         """Switch to push-to-talk mode and persist the choice."""
+        logger.info("Menu callback: switching to push_to_talk mode")
         self._mode = "push_to_talk"
         self._ptt_item.state = True
         self._toggle_item.state = False
         self._hotkey.set_mode("push_to_talk")
         self._settings.set("mode", "push_to_talk")
         self._refresh_hotkey_info_label()
+        rumps.notification(
+            "SafeVoice",
+            "Mode: Hold to Talk",
+            "Hold Left ⌥ to record, release to transcribe.",
+        )
 
     def _set_toggle_mode(self, _):
         """Switch to toggle mode and persist the choice.
@@ -292,12 +298,18 @@ class SafeVoiceApp(rumps.App):
         again to STOP and transcribe. Useful for longer dictations where
         holding the key is uncomfortable.
         """
+        logger.info("Menu callback: switching to toggle mode")
         self._mode = "toggle"
         self._ptt_item.state = False
         self._toggle_item.state = True
         self._hotkey.set_mode("toggle")
         self._settings.set("mode", "toggle")
         self._refresh_hotkey_info_label()
+        rumps.notification(
+            "SafeVoice",
+            "Mode: Toggle On/Off",
+            "Press Left ⌥ once to start recording, again to stop.",
+        )
 
     def _refresh_hotkey_info_label(self):
         """Update the menubar's Hotkey info line to match current mode.
