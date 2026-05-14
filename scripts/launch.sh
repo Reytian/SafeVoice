@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Launch SafeVoice.app reliably from an iCloud-synced project path.
+# Launch SafeVoice.app, defensively recovering from stale-signature hangs.
 #
-# The bundle lives under ~/Documents/, which is iCloud-synced. iCloud File
-# Provider continuously stamps com.apple.FinderInfo and com.apple.fileprovider.fpfs#P
-# xattrs onto the bundle root. These xattrs invalidate the ad-hoc signature
-# from the perspective of Gatekeeper, even though `codesign -vv` still says
-# "valid on disk". The symptom is a launched process that writes "SafeVoice
-# starting" to /tmp/safevoice.log and then hangs forever (Gatekeeper allowed
-# the bootstrap binary to run but won't let CPython execute).
+# History: this project used to live under ~/Documents/ (iCloud-synced).
+# iCloud File Provider would stamp com.apple.FinderInfo and
+# com.apple.fileprovider.fpfs#P xattrs onto the app bundle, invalidating the
+# ad-hoc signature from Gatekeeper's view (spctl "rejected" even when
+# `codesign -vv` said "valid on disk"). Symptom: the launched process writes
+# "SafeVoice starting" to /tmp/safevoice.log and then hangs forever.
 #
-# This launcher strips the offending xattrs, re-signs ad-hoc, and opens the
-# bundle. Use it instead of `open dist/SafeVoice.app` if you ever see the
-# hang. Cheap and idempotent on a clean bundle.
+# The project was moved to ~/Developer/voice-ime (NOT iCloud-synced) on
+# 2026-05-15, which fixes the root cause. This launcher keeps the xattr-strip
+# + re-sign step anyway: it is cheap, idempotent on a clean bundle, and a
+# harmless safety net. Prefer it over `open dist/SafeVoice.app`.
 
 set -euo pipefail
 
