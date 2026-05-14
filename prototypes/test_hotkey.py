@@ -8,8 +8,8 @@ Demonstrates:
   - Exiting after 10 seconds or when Escape is pressed
 
 Usage:
-  source /Users/haotianyi/Documents/voice-ime/.venv/bin/activate
-  python /Users/haotianyi/Documents/voice-ime/prototypes/test_hotkey.py
+  source ~/Developer/voice-ime/.venv/bin/activate
+  python ~/Developer/voice-ime/prototypes/test_hotkey.py
 
 Note:
   On macOS, the app running this script (e.g., Terminal, iTerm2) must have
