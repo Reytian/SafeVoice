@@ -73,15 +73,28 @@ def is_reasoning_model(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in KNOWN_REASONING_MODELS)
 
 
+# Compiled once: a complete reasoning block, and an unclosed trailing one.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_THINK_OPEN_RE = re.compile(r"<think>.*", re.DOTALL)
+
+
 def _strip_think_tags(text: str) -> str:
-    """Remove <think>...</think> blocks from LLM output."""
-    if "<think>" not in text:
+    """Remove <think>...</think> reasoning from LLM output.
+
+    Handles the cases the old find-based logic leaked on: multiple blocks,
+    a re-opened <think> after a closed one, and truncated output with an
+    unclosed trailing <think>. Any orphan </think> (a closer with no
+    matching opener) is also dropped. For the pathological "closer before
+    opener" input ("text </think> more <think> reasoning") the surrounding
+    plain text is preserved and only the tags plus the trailing unclosed
+    reasoning are stripped, so real dictated content is never silently lost.
+    """
+    if "<think>" not in text and "</think>" not in text:
         return text
-    idx = text.find("</think>")
-    if idx != -1:
-        return text[idx + len("</think>"):].strip()
-    # No closing tag — strip from <think> onward
-    return text[:text.find("<think>")].strip()
+    text = _THINK_BLOCK_RE.sub("", text)        # remove all complete blocks
+    text = _THINK_OPEN_RE.sub("", text)         # drop an unclosed trailing block
+    text = re.sub(r"\s*</think>\s*", " ", text)  # drop any orphan close tag, keep one space
+    return text.strip()
 
 
 def _directive_for_model(model: str) -> str:
