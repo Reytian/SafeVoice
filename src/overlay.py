@@ -192,9 +192,19 @@ class FloatingOverlay:
 
         self._language = language
         self._status = "listening"
+        self._current_status = "listening"
         self._apply_status()
         self._language_label.setStringValue_(language)
         self._text_label.setStringValue_("Listening...")
+        # Reset badge and text frame to initial layout on every new session so
+        # the width doesn't accumulate shrinkage from previous processing cycles.
+        if self._badge_label is not None:
+            self._badge_label.setHidden_(True)
+        if self._text_label is not None:
+            f = self._text_label.frame()
+            self._text_label.setFrame_(NSMakeRect(
+                self._text_x_base, f.origin.y, self._text_label_base_width, f.size.height
+            ))
         self._update_level_bar(0.0)
         self._reposition()
 
@@ -271,7 +281,7 @@ class FloatingOverlay:
                     f = self._text_label.frame()
                     self._text_label.setFrame_(NSMakeRect(
                         self._text_x_base + badge_width, f.origin.y,
-                        f.size.width - badge_width, f.size.height
+                        self._text_label_base_width - badge_width, f.size.height
                     ))
             elif status == "done":
                 self._badge_label.setStringValue_("OK")
@@ -283,14 +293,14 @@ class FloatingOverlay:
                     f = self._text_label.frame()
                     self._text_label.setFrame_(NSMakeRect(
                         self._text_x_base + badge_width, f.origin.y,
-                        f.size.width - badge_width, f.size.height
+                        self._text_label_base_width - badge_width, f.size.height
                     ))
             else:
                 self._badge_label.setHidden_(True)
                 if self._text_label is not None:
                     f = self._text_label.frame()
                     self._text_label.setFrame_(NSMakeRect(
-                        self._text_x_base, f.origin.y, f.size.width, f.size.height
+                        self._text_x_base, f.origin.y, self._text_label_base_width, f.size.height
                     ))
 
     @_ensure_main_thread
@@ -315,8 +325,11 @@ class FloatingOverlay:
         ctx.setDuration_(_FADE_DURATION)
 
         # Use a completion handler to order the panel out after the fade.
+        # Guard on _visible: if show() was called again before the 100ms fade
+        # finished, _visible is True and we must NOT order the panel out —
+        # the new show() already owns it.
         def _on_complete():
-            if self._panel is not None:
+            if self._panel is not None and not self._visible:
                 self._panel.orderOut_(None)
 
         ctx.setCompletionHandler_(_on_complete)
@@ -452,8 +465,9 @@ class FloatingOverlay:
         self._text_x_base = x_cursor  # Save for badge shift logic
         text_width = _PANEL_MIN_WIDTH - x_cursor - _HORIZONTAL_PADDING
         text_y = (_PANEL_HEIGHT - 20.0) / 2.0
+        self._text_label_base_width = max(text_width, _TEXT_FIELD_MIN_WIDTH)
         self._text_label = self._make_label(
-            frame=NSMakeRect(x_cursor, text_y, max(text_width, _TEXT_FIELD_MIN_WIDTH), 20.0),
+            frame=NSMakeRect(x_cursor, text_y, self._text_label_base_width, 20.0),
             text="Listening...",
             font=NSFont.systemFontOfSize_(13.0),
             color=NSColor.labelColor(),
