@@ -20,11 +20,55 @@ import objc
 from Foundation import (
     NSActivityLatencyCritical,
     NSActivityUserInitiatedAllowingIdleSystemSleep,
+    NSObject,
     NSProcessInfo,
+    NSThread,
 )
 
 logger = logging.getLogger(__name__)
 import rumps
+
+
+class _MainThreadTrampoline(NSObject):
+    """Invoke a Python callable on the main thread.
+
+    AppKit (NSStatusItem title, menu item titles) must only be mutated on the
+    main thread; the status/title updates run from background worker threads
+    (model load, transcription). A class-level set prevents the trampoline
+    from being GC'd before the async selector fires.
+    """
+
+    _prevent_gc: set = set()
+
+    def initWithBlock_(self, block):
+        self = objc.super(_MainThreadTrampoline, self).init()
+        if self is None:
+            return None
+        self._block = block
+        return self
+
+    def invoke(self):
+        try:
+            if self._block is not None:
+                self._block()
+        finally:
+            _MainThreadTrampoline._prevent_gc.discard(self)
+
+
+def _run_on_main(block):
+    """Run *block* (a zero-arg callable) on the main thread.
+
+    Runs inline if already on the main thread, otherwise dispatches via
+    performSelectorOnMainThread so AppKit objects are only touched on main.
+    """
+    if NSThread.isMainThread():
+        block()
+        return
+    trampoline = _MainThreadTrampoline.alloc().initWithBlock_(block)
+    _MainThreadTrampoline._prevent_gc.add(trampoline)
+    trampoline.performSelectorOnMainThread_withObject_waitUntilDone_(
+        "invoke", None, False
+    )
 
 from .audio_capture import AudioCapture
 from .asr_engine import ASREngine
@@ -528,7 +572,11 @@ class SafeVoiceApp(rumps.App):
         self._settings_window.show()
 
     def _set_state(self, state):
-        """Update app state and UI."""
+        """Update app state and UI.
+
+        Called from background threads (model load, transcription worker), so
+        the AppKit title write is dispatched to the main thread.
+        """
         self._state = state
         # Show status text next to the icon; None = icon only
         titles = {
@@ -538,63 +586,99 @@ class SafeVoiceApp(rumps.App):
             STATE_TRANSCRIBING: "...",
             STATE_INJECTING: "...",
         }
-        self.title = titles.get(state)
+        title = titles.get(state)
+
+        def _apply():
+            try:
+                self.title = title
+            except Exception:
+                logger.debug("Failed to set status-bar title", exc_info=True)
+
+        _run_on_main(_apply)
 
     def _update_status(self, text):
-        """Update the status menu item."""
-        try:
-            self._status_item.title = text
-        except Exception:
-            pass
+        """Update the status menu item (main-thread AppKit write)."""
+        def _apply():
+            try:
+                self._status_item.title = text
+            except Exception:
+                pass
+
+        _run_on_main(_apply)
 
     # -- Hotkey callbacks --
 
     def _on_hotkey_activate(self):
-        """Called when the user activates voice input (hotkey pressed)."""
+        """Called when the user activates voice input (hotkey pressed).
+
+        Returns True if recording started, False if the request was rejected
+        (busy/loading/mic unavailable) so HotkeyManager can roll back its
+        toggle state and the next press is a clean activation.
+        """
         try:
             logger.debug("Hotkey activate, state=%s", self._state)
             if self._state not in (STATE_IDLE,):
-                return
+                return False
 
             if not self._asr.is_loaded:
                 self._update_status("Model loading...")
-                return
+                return False
 
-            self._start_listening()
+            return self._start_listening()
         except Exception:
             logger.exception("Error in _on_hotkey_activate")
+            return False
 
     def _on_hotkey_deactivate(self):
-        """Called when the user deactivates voice input (hotkey released)."""
+        """Called when the user deactivates voice input (hotkey released).
+
+        Returns True if a recording was stopped, False otherwise.
+        """
         try:
             logger.debug("Hotkey deactivate, state=%s", self._state)
             if self._state != STATE_LISTENING:
-                return
+                return False
 
             self._stop_listening_and_transcribe()
+            return True
         except Exception:
             logger.exception("Error in _on_hotkey_deactivate")
+            return False
 
     # -- Recording flow --
 
     def _start_listening(self):
-        """Start capturing audio."""
-        self._set_state(STATE_LISTENING)
-        self._update_status("Listening...")
+        """Start capturing audio. Returns True if recording actually started.
+
+        Audio capture is started BEFORE state/overlay are committed. If the
+        mic can't open (busy, unplugged, no input device, no permission),
+        start() raises and we revert to IDLE instead of leaving the app
+        wedged at STATE_LISTENING with no stream (which previously bricked
+        the app until restart).
+        """
         with self._audio_lock:
             self._audio_chunks.clear()
 
         lang = LANGUAGES[self._language_index]
-        self._overlay.show(language=lang["badge"])
 
-        # Start audio capture with callback (batch mode — no streaming ASR)
-        self._audio.start(callback=self._on_audio_chunk)
+        try:
+            self._audio.start(callback=self._on_audio_chunk)
+        except Exception:
+            logger.exception("Failed to start audio capture")
+            self._set_state(STATE_IDLE)
+            self._update_status("Microphone unavailable")
+            return False
+
+        self._set_state(STATE_LISTENING)
+        self._update_status("Listening...")
+        self._overlay.show(language=lang["badge"])
 
         # Start speculative LLM if using a custom mode
         if self._active_mode.prompt_template and self._llm.is_available():
             self._start_speculative_timer()
 
         print("[SafeVoice] Listening...")
+        return True
 
     def _on_audio_chunk(self, chunk):
         """Called for each audio chunk from the microphone."""
@@ -625,12 +709,16 @@ class SafeVoiceApp(rumps.App):
         timer_thread = threading.Thread(target=_update_timer, daemon=True)
         timer_thread.start()
 
-        # Stop audio capture
-        full_audio = self._audio.stop()
-
         # Run transcription in background thread
         def transcribe():
             try:
+                # Stop audio capture HERE, in the worker, NOT on the caller's
+                # thread. _stop_listening_and_transcribe runs on the CGEventTap
+                # callback thread; stopping/closing the sounddevice stream there
+                # is slow enough to trip kCGEventTapDisabledByTimeout, which
+                # drops the following modifier-release event and wedges the
+                # hotkey until the tap is re-enabled.
+                full_audio = self._audio.stop()
                 # Batch transcription on full audio for best accuracy
                 if full_audio is None or len(full_audio) == 0:
                     text, lang = "", "Auto"
@@ -667,9 +755,11 @@ class SafeVoiceApp(rumps.App):
                             logger.info("Using speculative result")
                             text = cached
                         else:
-                            cleaned = self._llm.cleanup(text, custom_prompt=prompt)
-                            if cleaned != text:
-                                text = cleaned
+                            # Assign unconditionally: cleanup() already falls
+                            # back to the rule-stripped text on failure, so a
+                            # legitimate result equal to the input must not be
+                            # dropped by an == guard.
+                            text = self._llm.cleanup(text, custom_prompt=prompt)
                         self._overlay.update_text(text)
                         logger.info("Mode result: %r", text)
                     elif self._active_mode.prompt_template is None and self._llm.is_available() and is_long_enough:
@@ -708,16 +798,31 @@ class SafeVoiceApp(rumps.App):
                     time.sleep(0.05)
                     self._overlay.hide()
                     time.sleep(0.02)
-                    self._inject_text(text)
-                    self._settings.record_transcription(text)
-                    elapsed = time.monotonic() - timer_start
-                    self._history.add(
-                        final_text=text,
-                        raw_text=raw_for_history,
-                        mode=self._active_mode.name,
-                        duration=elapsed,
-                        language=self._settings.get("languages", ["Auto"])[0],
-                    )
+                    injected = self._inject_text(text)
+                    if injected:
+                        # Only record a success when the text actually landed.
+                        # Wrap bookkeeping so a stats/history write failure can
+                        # never surface as a (false) transcription error: the
+                        # paste already happened.
+                        try:
+                            self._settings.record_transcription(text)
+                            elapsed = time.monotonic() - timer_start
+                            self._history.add(
+                                final_text=text,
+                                raw_text=raw_for_history,
+                                mode=self._active_mode.name,
+                                duration=elapsed,
+                                language=self._settings.get("languages", ["Auto"])[0],
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Post-injection bookkeeping failed (paste already succeeded)"
+                            )
+                    else:
+                        # Injection failed; _inject_text kept the transcript on
+                        # the clipboard and showed an error. Don't count it as
+                        # a successful transcription.
+                        logger.warning("Injection failed; transcript preserved on clipboard")
                 else:
                     self._overlay.update_text("(no speech detected)")
                     time.sleep(0.3)
@@ -767,20 +872,39 @@ class SafeVoiceApp(rumps.App):
             self._speculative_timer_stop.set()
 
     def _inject_text(self, text):
-        """Inject transcribed text into the active application."""
+        """Inject transcribed text into the active application.
+
+        Returns True on success. On any failure the transcript is preserved on
+        the clipboard (so it is never silently lost) and a visible error is
+        shown on the overlay, which the caller has already hidden.
+        """
         self._set_state(STATE_INJECTING)
+        badge = LANGUAGES[self._language_index]["badge"]
 
         if not TextInjector.check_accessibility_permission():
             print("[SafeVoice] Accessibility permission not granted!")
-            self._overlay.update_text("Grant Accessibility permission in System Settings")
-            time.sleep(2.0)
-            return
+            self._injector.copy_to_clipboard(text)
+            self._overlay.show(language=badge)
+            self._overlay.set_status("error")
+            self._overlay.update_text("Grant Accessibility permission. Text copied to clipboard.")
+            time.sleep(2.5)
+            self._overlay.hide()
+            return False
 
         success = self._injector.inject(text)
         if success:
             print(f"[SafeVoice] Injected: {text}")
         else:
             print(f"[SafeVoice] Injection failed for: {text}")
+            # Re-copy so the changeCount guard skips the injector's restore and
+            # the transcript stays on the clipboard for manual paste.
+            self._injector.copy_to_clipboard(text)
+            self._overlay.show(language=badge)
+            self._overlay.set_status("error")
+            self._overlay.update_text("Paste failed. Text copied to clipboard.")
+            time.sleep(2.0)
+            self._overlay.hide()
+        return success
 
     def _on_quit(self, _):
         """Clean up and quit."""

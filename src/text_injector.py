@@ -25,7 +25,12 @@ _KEYCODE_V = 9
 
 # Delay in seconds before restoring the previous clipboard contents.
 # Must be long enough for the target application to process the paste event.
-_CLIPBOARD_RESTORE_DELAY = 0.5
+# Kept comfortably above the old 0.5s: under load (heavy/launching apps, busy
+# main thread) a short delay restores the user's clipboard BEFORE the target
+# reads it, so it pastes the OLD clipboard and the transcript is lost. The
+# changeCount guard does not catch this because a passive read doesn't bump it.
+# Overridable per-instance via TextInjector(restore_delay=...).
+_CLIPBOARD_RESTORE_DELAY = 1.2
 
 
 class TextInjector:
@@ -60,6 +65,19 @@ class TextInjector:
 
         with self._lock:
             return self._inject_locked(text)
+
+    def copy_to_clipboard(self, text: str) -> bool:
+        """Place *text* on the clipboard without pasting or restoring.
+
+        Used to preserve a transcript when injection cannot proceed (e.g. no
+        Accessibility permission, or the paste failed) so the user can paste
+        it manually instead of losing it.
+        """
+        if not text:
+            return False
+        pb = NSPasteboard.generalPasteboard()
+        with self._lock:
+            return self._write_clipboard(pb, text)
 
     @staticmethod
     def check_accessibility_permission() -> bool:

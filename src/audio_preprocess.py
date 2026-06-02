@@ -11,16 +11,29 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+# Below this RMS the clip is treated as no useful speech and left untouched,
+# so faint room tone is never amplified up to full scale (which makes ASR
+# hallucinate). Above it, the gain is still capped to a sane maximum.
+_SPEECH_RMS_FLOOR = 0.01
+_MAX_GAIN = 8.0
+
+
 def normalize_audio(audio: np.ndarray, target_peak: float = 0.95) -> np.ndarray:
     """Normalize audio to target peak amplitude.
 
-    Prevents clipping and ensures consistent volume for ASR.
-    Skips normalization if audio is silence (peak < 0.001).
+    Prevents clipping and ensures consistent volume for ASR. Leaves
+    near-silent input unchanged (gated on RMS) and caps the applied gain,
+    so faint background noise in a quiet room is not blown up to full scale.
     """
-    peak = np.abs(audio).max()
-    if peak < 0.001:  # silence
+    if audio.size == 0:
         return audio
-    return audio * (target_peak / peak)
+    peak = float(np.abs(audio).max())
+    rms = float(np.sqrt(np.mean(audio ** 2)))
+    if peak <= 0.0 or rms < _SPEECH_RMS_FLOOR:
+        # Silence / room tone only — amplifying this just feeds the ASR noise.
+        return audio
+    gain = min(target_peak / peak, _MAX_GAIN)
+    return audio * gain
 
 
 def reduce_noise(audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:

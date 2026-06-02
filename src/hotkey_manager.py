@@ -354,6 +354,11 @@ class HotkeyManager:
             )
             if self._cg_tap is not None:
                 Quartz.CGEventTapEnable(self._cg_tap, True)
+            # While the tap was disabled we may have missed the key/modifier
+            # RELEASE that normally clears the edge state. If we don't reset it,
+            # _activate_trigger_held stays stuck True and every subsequent press
+            # is ignored ("hotkey not responding") until the app restarts.
+            self._reset_after_tap_reenable()
             return event
 
         flags = Quartz.CGEventGetFlags(event)
@@ -366,6 +371,23 @@ class HotkeyManager:
             self._handle_key_up(event)
 
         return event
+
+    def _reset_after_tap_reenable(self):
+        """Clear stale activation edge-state after the tap is re-enabled.
+
+        At idle (the common case) this is a harmless no-op. If the tap was
+        disabled mid-recording, we can no longer trust the missed release, so
+        we finalize the in-progress recording and return to a clean idle edge.
+        """
+        callback = None
+        with self._lock:
+            self._activate_trigger_held = False
+            if self._is_active:
+                self._is_active = False
+                callback = self._on_deactivate
+        if callback is not None:
+            logger.info("Tap re-enabled while active; finalizing recording")
+            self._safe_invoke(callback)
 
     def _handle_flags_changed(self, flags: int):
         """Handle modifier-only activation hotkey via flagsChanged."""
@@ -405,7 +427,13 @@ class HotkeyManager:
             action = "activate" if callback == self._on_activate else "deactivate"
             logger.info("Activation hotkey (modifier) -> %s", action)
             print(f"[SafeVoice] Hotkey {action}")
-            self._safe_invoke(callback)
+            accepted = self._safe_invoke(callback)
+            if not accepted:
+                # The app rejected the transition (busy/loading/mic failed).
+                # Roll back the optimistic active flag so the NEXT press is a
+                # fresh activate instead of a wasted resync press (toggle mode).
+                with self._lock:
+                    self._is_active = False
 
     def _handle_key_down(self, flags: int, event):
         """Handle key+modifier activation hotkey via keyDown."""
@@ -444,7 +472,12 @@ class HotkeyManager:
             action = "activate" if callback == self._on_activate else "deactivate"
             logger.info("Activation hotkey (key) -> %s", action)
             print(f"[SafeVoice] Hotkey {action}")
-            self._safe_invoke(callback)
+            accepted = self._safe_invoke(callback)
+            if not accepted:
+                # See _handle_flags_changed: roll back so a rejected activation
+                # doesn't leave HotkeyManager and the app out of sync.
+                with self._lock:
+                    self._is_active = False
 
     def _handle_key_up(self, event):
         """Handle key release for push_to_talk deactivation."""
@@ -490,8 +523,17 @@ class HotkeyManager:
         return "+".join(parts) if parts else "None"
 
     @staticmethod
-    def _safe_invoke(callback: Callable[[], None]) -> None:
+    def _safe_invoke(callback: Callable[[], None]) -> bool:
+        """Invoke *callback* and report whether it accepted the transition.
+
+        A callback may return ``False`` to signal it rejected the state
+        change (e.g. the app was busy and could not start recording). Any
+        other return value (including ``None``) counts as accepted. An
+        exception counts as rejected so the caller can roll back.
+        """
         try:
-            callback()
+            result = callback()
+            return result is not False
         except Exception:
             logger.exception("Unhandled exception in hotkey callback %r", callback)
+            return False

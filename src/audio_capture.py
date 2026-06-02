@@ -96,14 +96,28 @@ class AudioCapture:
             self._current_level = 0.0
             self._user_callback = callback
 
-            self._stream = sd.InputStream(
+            # Build and start the stream into a local first. Only commit it to
+            # self._stream / self._recording once start() succeeds, so a failed
+            # open/start (device busy, unplugged, unsupported rate) cannot leak
+            # the PortAudio handle or leave the object half-initialised.
+            stream = sd.InputStream(
                 samplerate=self._sample_rate,
                 channels=self._channels,
                 blocksize=self._blocksize,
                 dtype="float32",
                 callback=self._audio_callback,
             )
-            self._stream.start()
+            try:
+                stream.start()
+            except Exception:
+                try:
+                    stream.close()
+                finally:
+                    self._stream = None
+                    self._recording = False
+                    self._user_callback = None
+                raise
+            self._stream = stream
             self._recording = True
 
     def stop(self) -> np.ndarray:
@@ -112,14 +126,14 @@ class AudioCapture:
         Returns:
             A 1-D float32 numpy array containing all captured audio
             concatenated in order. Returns an empty array if no audio
-            was captured.
-
-        Raises:
-            RuntimeError: If recording is not in progress.
+            was captured, or if recording was never successfully started
+            (e.g. start() failed), so callers can stop unconditionally.
         """
         with self._lock:
             if not self._recording:
-                raise RuntimeError("Recording is not in progress.")
+                # Idempotent: a stop() with no active stream is a no-op rather
+                # than a crash, so a failed start() can never wedge callers.
+                return np.empty(0, dtype=np.float32)
 
             self._stream.stop()
             self._stream.close()

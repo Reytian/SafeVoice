@@ -8,6 +8,7 @@ efficient model lifecycle management.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -93,6 +94,13 @@ class ASREngine:
             self.MODEL_ID = model_id
         self._streaming_state = None
         self._language: str = "Auto"
+
+        # Serializes all access to the single stateful MLX session. The MLX
+        # Session is not reentrant/thread-safe: a speculative transcribe pass
+        # and the final transcribe pass running concurrently share graph/
+        # compute state and can crash (Metal), corrupt text, or wedge the
+        # session. All inference goes through this lock.
+        self._session_lock = threading.Lock()
 
         # Streaming parameters (optimized defaults)
         self._chunk_size_sec: float = 1.0
@@ -247,11 +255,12 @@ class ASREngine:
         try:
             lang_hint: str | None = self.LANGUAGES.get(self._language)
 
-            result = self._session.transcribe(
-                audio,
-                language=lang_hint,
-                verbose=False,
-            )
+            with self._session_lock:
+                result = self._session.transcribe(
+                    audio,
+                    language=lang_hint,
+                    verbose=False,
+                )
 
             detected = self._normalize_language(result.language)
             text = result.text.strip()
@@ -331,9 +340,10 @@ class ASREngine:
             )
 
         try:
-            self._streaming_state = self._session.feed_audio(
-                audio_chunk, self._streaming_state
-            )
+            with self._session_lock:
+                self._streaming_state = self._session.feed_audio(
+                    audio_chunk, self._streaming_state
+                )
 
             text = (self._streaming_state.text or "").strip()
             detected = self._normalize_language(
@@ -367,9 +377,10 @@ class ASREngine:
             )
 
         try:
-            self._streaming_state = self._session.finish_streaming(
-                self._streaming_state
-            )
+            with self._session_lock:
+                self._streaming_state = self._session.finish_streaming(
+                    self._streaming_state
+                )
 
             text = (self._streaming_state.text or "").strip()
             detected = self._normalize_language(

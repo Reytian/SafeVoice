@@ -13,8 +13,11 @@ The window is non-modal and follows macOS Human Interface Guidelines.
 All UI mutations are dispatched to the main thread.
 """
 
+import logging
 import threading
 from typing import Optional, Dict, Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from AppKit import (
     NSWindow,
@@ -211,6 +214,10 @@ class _HotkeyRecorderDelegate(NSObject):
 
     def startRecording(self):
         """Enter recording mode."""
+        # Already recording: don't install a second monitor (the old one would
+        # be orphaned and leak, intercepting events forever).
+        if self._recording:
+            return
         self._recording = True
         self._field.setStringValue_("Press a key...")
         self._field.setTextColor_(NSColor.systemOrangeColor())
@@ -232,6 +239,10 @@ class _HotkeyRecorderDelegate(NSObject):
         modifier-only hotkey.
         """
         from AppKit import NSEvent, NSKeyDownMask
+
+        # Defensive: drop any previously-installed monitor before adding a new
+        # one so we can never orphan/leak an NSEvent monitor.
+        self._remove_monitor()
 
         NSFlagsChangedMask = 1 << 12  # NSEventMaskFlagsChanged
         pending_mods = []  # Modifiers held since last flagsChanged
@@ -365,6 +376,16 @@ class SettingsWindow:
     @_ensure_main_thread
     def hide(self) -> None:
         """Hide the settings window."""
+        # Stop any in-progress hotkey recorder so it doesn't keep a live
+        # NSEvent monitor (and its retained handler) alive after the window
+        # goes away.
+        for delegate in self._hotkey_delegates:
+            stop = getattr(delegate, "stopRecording", None)
+            if callable(stop) and getattr(delegate, "_recording", False):
+                try:
+                    stop()
+                except Exception:
+                    logger.debug("Failed to stop hotkey recorder on hide", exc_info=True)
         if self._window is not None:
             self._window.orderOut_(None)
 

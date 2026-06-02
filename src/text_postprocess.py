@@ -55,9 +55,12 @@ _EN_FILLER_RE = re.compile(
 
 # Stuttering: same word repeated 2+ times with whitespace.
 # English: "I I want" -> "I want"; "the the cat" -> "the cat".
-# Keeps legitimate doubles like "had had" intact only when they're capitalized
-# differently or in a non-stutter pattern, which is rare enough to ignore.
-_EN_STUTTER_RE = re.compile(r"\b(\w+)(?:\s+\1\b)+", flags=re.IGNORECASE)
+# CRITICAL: restricted to ASCII letters ([A-Za-z]+), NOT \w. Using \w would
+# also collapse repeated digits ("buy 2 2 apples" -> "buy 2 apples", a spoken
+# PIN "1 1 2" -> "1 2") and spaced CJK reduplication ("好 好 学习" -> "好 学习",
+# destroying 好好学习) — real data loss. CJK stutters are handled separately and
+# conservatively by _CN_STUTTER_RE; digits are intentionally left alone.
+_EN_STUTTER_RE = re.compile(r"\b([A-Za-z]+)(?:\s+\1\b)+", flags=re.IGNORECASE)
 
 # Chinese single-char stuttering. CRITICAL: Cannot blanket-collapse
 # any duplicated CJK char — that would corrupt legitimate compounds like

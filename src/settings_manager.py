@@ -7,11 +7,14 @@ Thread-safe: all reads and writes are guarded by a lock.
 """
 
 import json
+import logging
 import os
 import threading
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Default settings file location.
@@ -170,10 +173,30 @@ class SettingsManager:
                 pass
 
     def reset_to_defaults(self) -> None:
-        """Reset all settings to their default values and persist."""
+        """Reset all settings to their default values, persist, and notify.
+
+        Fires change callbacks for every key whose value actually changed so
+        the live app (hotkey listener, mode, language) follows the reset
+        instead of silently keeping the old values until relaunch.
+        """
         with self._lock:
-            self._data = dict(_DEFAULTS)
+            old = dict(self._data)
+            new = dict(_DEFAULTS)
+            self._data = new
             self._save_locked()
+            callbacks = list(self._callbacks)
+
+        changed_keys = set(old) | set(new)
+        for key in changed_keys:
+            old_val = old.get(key)
+            new_val = new.get(key)
+            if old_val == new_val:
+                continue
+            for cb in callbacks:
+                try:
+                    cb(key, old_val, new_val)
+                except Exception:
+                    logger.exception("Settings change callback failed for key %s", key)
 
     # ------------------------------------------------------------------
     # Usage statistics
@@ -232,8 +255,13 @@ class SettingsManager:
         with self._lock:
             stats = {k: self._data.get(k) for k in keys}
 
-        # Formatted time saved display
-        seconds = stats["stats_time_saved_seconds"] or 0.0
+        # Formatted time saved display. Coerce defensively: a hand-edited or
+        # partially-corrupted settings.json may store this as a string, which
+        # would otherwise raise TypeError and crash the dashboard.
+        try:
+            seconds = float(stats["stats_time_saved_seconds"] or 0.0)
+        except (TypeError, ValueError):
+            seconds = 0.0
         total_minutes = int(seconds // 60)
         if total_minutes >= 60:
             hours = total_minutes // 60
@@ -269,8 +297,9 @@ class SettingsManager:
                 self._data.update(stored)
                 if migrated:
                     self._save_locked()
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            # Keep running on defaults, but make the failure diagnosable.
+            logger.warning("Failed to load settings from %s: %s; using defaults", self._path, exc)
 
     def _save_locked(self) -> None:
         """Write the current settings to disk. Must hold ``_lock``.
@@ -285,5 +314,7 @@ class SettingsManager:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
             os.replace(tmp_path, self._path)
-        except OSError:
-            pass
+        except (OSError, TypeError, ValueError) as exc:
+            # Disk full / permission / non-serializable value: don't crash the
+            # app, but log so a silently-not-persisting setting is diagnosable.
+            logger.warning("Failed to save settings to %s: %s", self._path, exc)

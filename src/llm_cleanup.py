@@ -321,6 +321,21 @@ class LLMCleanup:
                     custom_prompt,
                 )
                 if result:
+                    # Guard the custom path too. Reasoning-tuned models dump
+                    # hundreds of tokens of untagged "let me think..." prose
+                    # that _strip_think_tags can't catch (no <think> tags).
+                    # Custom modes legitimately expand text, so this is far
+                    # more generous than the dictation path's 2x guard, but it
+                    # still catches a monologue blowup. On a trip, fall back to
+                    # rule-stripped text rather than pasting the leak.
+                    if len(result) > 4 * len(raw_text) + 400:
+                        logger.warning(
+                            "Custom LLM cleanup rejected (runaway length, likely "
+                            "reasoning leak): %d-char input -> %d-char output. "
+                            "Falling back to rule-stripped text.",
+                            len(raw_text), len(result),
+                        )
+                        return pre_cleaned
                     logger.info("Custom LLM: %r -> %r", raw_text, result)
                     return result
             except Exception as e:

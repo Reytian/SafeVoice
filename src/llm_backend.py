@@ -17,6 +17,11 @@ OLLAMA_BASE = "http://localhost:11434"
 DEFAULT_LOCAL_MODEL = "qwen2.5:3b"
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3.5-4B-4bit"
 
+# Max output tokens for a cleanup response. Kept well above the old 512 so a
+# long multi-sentence dictation (especially CJK, where 512 tokens is far fewer
+# characters) is not silently truncated mid-sentence before being pasted.
+MAX_OUTPUT_TOKENS = 2048
+
 # Default model per cloud provider.
 CLOUD_DEFAULTS = {
     "openai": "gpt-4o-mini",
@@ -224,7 +229,7 @@ class OllamaBackend(LLMBackend):
             # models on Ollama 0.4+. Older Ollama / non-thinking models
             # ignore the field, so it's safe to always send.
             "think": False,
-            "options": {"temperature": 0.0, "num_predict": 512, "top_p": 0.9},
+            "options": {"temperature": 0.0, "num_predict": MAX_OUTPUT_TOKENS, "top_p": 0.9},
         }).encode()
         req = urllib.request.Request(
             f"{self._base_url}/api/chat",
@@ -234,8 +239,23 @@ class OllamaBackend(LLMBackend):
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
-            result = data["message"]["content"].strip()
-            return _strip_think_tags(result)
+        # Validate the envelope before indexing so an error/empty response
+        # produces an actionable message instead of an opaque KeyError.
+        if not isinstance(data, dict):
+            raise RuntimeError("Ollama returned an unexpected response type")
+        if data.get("error"):
+            raise RuntimeError(f"Ollama error: {data['error']}")
+        message = data.get("message") or {}
+        content = message.get("content")
+        if content is None:
+            raise RuntimeError("Ollama response contained no message content")
+        if data.get("done_reason") == "length":
+            logger.warning(
+                "Ollama output hit the %d-token cap (truncated). The cleaned "
+                "text may be cut short; caller should prefer rule-stripped text.",
+                MAX_OUTPUT_TOKENS,
+            )
+        return _strip_think_tags(content.strip())
 
     @staticmethod
     def list_models(base_url: str = OLLAMA_BASE) -> list:
@@ -309,7 +329,7 @@ class MLXBackend(LLMBackend):
             self._model,
             self._tokenizer,
             prompt=prompt,
-            max_tokens=512,
+            max_tokens=MAX_OUTPUT_TOKENS,
             temp=0.0,
         )
         return _strip_think_tags(result.strip())
@@ -356,7 +376,7 @@ class CloudBackend(LLMBackend):
                     {"role": "user", "content": user_message},
                 ],
                 "temperature": 0.0,
-                "max_tokens": 512,
+                "max_tokens": MAX_OUTPUT_TOKENS,
             }
             return url, headers, json.dumps(payload).encode()
 
@@ -369,7 +389,7 @@ class CloudBackend(LLMBackend):
             }
             payload = {
                 "model": self.model,
-                "max_tokens": 512,
+                "max_tokens": MAX_OUTPUT_TOKENS,
                 "system": system_prompt,
                 "messages": [
                     {"role": "user", "content": user_message},
@@ -390,7 +410,7 @@ class CloudBackend(LLMBackend):
                 ],
                 "generationConfig": {
                     "temperature": 0.0,
-                    "maxOutputTokens": 512,
+                    "maxOutputTokens": MAX_OUTPUT_TOKENS,
                 },
             }
             return url, headers, json.dumps(payload).encode()
@@ -408,7 +428,7 @@ class CloudBackend(LLMBackend):
                     {"role": "user", "content": user_message},
                 ],
                 "temperature": 0.0,
-                "max_tokens": 512,
+                "max_tokens": MAX_OUTPUT_TOKENS,
             }
             return url, headers, json.dumps(payload).encode()
 
@@ -422,17 +442,43 @@ class CloudBackend(LLMBackend):
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
 
-        # Extract text from provider-specific response format.
+        if not isinstance(data, dict):
+            raise RuntimeError(f"{self.provider} returned an unexpected response type")
+        # Surface a provider error message before indexing, so auth/quota/
+        # content-block failures produce actionable logs instead of an opaque
+        # KeyError/IndexError flattened into a generic 'cleanup failed'.
+        if data.get("error"):
+            err = data["error"]
+            msg = err.get("message") if isinstance(err, dict) else err
+            raise RuntimeError(f"{self.provider} API error: {msg}")
+
+        # Extract text from provider-specific response format, guarding the
+        # arrays so an empty/blocked response is a clear error, not IndexError.
         if self.provider == "openai" or self.provider in OPENAI_COMPAT_PROVIDERS:
-            text = data["choices"][0]["message"]["content"].strip()
+            choices = data.get("choices") or []
+            if not choices:
+                raise RuntimeError(f"{self.provider} returned no choices")
+            text = (choices[0].get("message") or {}).get("content")
         elif self.provider == "anthropic":
-            text = data["content"][0]["text"].strip()
+            content = data.get("content") or []
+            if not content:
+                raise RuntimeError("Anthropic returned no content (possibly blocked or stopped)")
+            text = content[0].get("text")
         elif self.provider == "google":
-            text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            # Gemini returns candidates=[] when a response is safety-blocked.
+            candidates = data.get("candidates") or []
+            if not candidates:
+                raise RuntimeError("Google returned no candidates (response likely blocked)")
+            parts = (candidates[0].get("content") or {}).get("parts") or []
+            if not parts:
+                raise RuntimeError("Google candidate had no content parts")
+            text = parts[0].get("text")
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
 
-        return _strip_think_tags(text)
+        if text is None:
+            raise RuntimeError(f"{self.provider} response contained no text")
+        return _strip_think_tags(text.strip())
 
 
 def get_backend(

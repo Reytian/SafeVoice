@@ -1,9 +1,12 @@
 """SQLite-backed transcription history with CSV export."""
 import csv
+import logging
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import os
+
+logger = logging.getLogger(__name__)
 
 
 class HistoryStore:
@@ -42,19 +45,30 @@ class HistoryStore:
         return conn
 
     def add(self, final_text: str, raw_text: str = "", mode: str = "quick",
-            duration: float = 0.0, language: str = ""):
+            duration: float = 0.0, language: str = "") -> bool:
+        """Persist a transcription. Returns True on success.
+
+        A write failure (locked DB, disk full, corruption) is logged and
+        swallowed rather than raised, so it can never turn an already-pasted
+        transcription into a user-facing 'Error'.
+        """
         word_count = len(final_text.split())
         with self._lock:
-            conn = self._connect()
             try:
-                conn.execute(
-                    "INSERT INTO history (timestamp, final_text, raw_text, mode, duration, language, word_count) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (datetime.now().isoformat(), final_text, raw_text, mode, duration, language, word_count)
-                )
-                conn.commit()
-            finally:
-                conn.close()
+                conn = self._connect()
+                try:
+                    conn.execute(
+                        "INSERT INTO history (timestamp, final_text, raw_text, mode, duration, language, word_count) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (datetime.now().isoformat(), final_text, raw_text, mode, duration, language, word_count)
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                logger.exception("Failed to write transcription to history at %s", self._db_path)
+                return False
+        return True
 
     def get_recent(self, limit: int = 50) -> list[dict]:
         with self._lock:
@@ -68,14 +82,25 @@ class HistoryStore:
             return [dict(r) for r in rows]
 
     def get_by_date(self, start_date: str, end_date: str) -> list[dict]:
+        # Use an exclusive upper bound on the day AFTER end_date so entries
+        # recorded in the final second (23:59:59.xxxxxx, microsecond ISO
+        # timestamps) are not silently dropped from queries and CSV exports.
         if "T" not in end_date:
-            end_date += "T23:59:59"
+            try:
+                end_exclusive = (date.fromisoformat(end_date) + timedelta(days=1)).isoformat()
+            except ValueError:
+                end_exclusive = end_date + "T23:59:59.999999"
+            upper_clause = "timestamp < ?"
+            upper_value = end_exclusive
+        else:
+            upper_clause = "timestamp <= ?"
+            upper_value = end_date
         with self._lock:
             conn = self._connect()
             try:
                 rows = conn.execute(
-                    "SELECT * FROM history WHERE timestamp >= ? AND timestamp <= ? ORDER BY id DESC",
-                    (start_date, end_date)
+                    f"SELECT * FROM history WHERE timestamp >= ? AND {upper_clause} ORDER BY id DESC",
+                    (start_date, upper_value)
                 ).fetchall()
             finally:
                 conn.close()

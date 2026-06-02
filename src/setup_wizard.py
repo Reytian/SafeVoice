@@ -206,9 +206,12 @@ class SetupWizard:
 
         # --- LLM Model Status ---
         llm_model = self._app._settings.get("llm_local_model", "qwen2.5:3b")
+        # list_models() returns a list of model-name STRINGS, not dicts. Treat
+        # them as strings; indexing m["name"] on a str raised TypeError and
+        # crashed the wizard mid-onboarding whenever Ollama had >=1 model.
         ollama_models = OllamaBackend.list_models()
         ollama_running = len(ollama_models) > 0
-        llm_ready = any(m["name"] == llm_model or m["name"] == f"{llm_model}:latest" for m in ollama_models)
+        llm_ready = any(m == llm_model or m == f"{llm_model}:latest" for m in ollama_models)
 
         if llm_ready:
             llm_status = self._label(f"\u2713 LLM model ready ({llm_model})", 13, y=165, x=60)
@@ -401,10 +404,13 @@ class SetupWizard:
         hotkey_display = "Option+Space"
         try:
             hk = self._app._settings.get("activate_hotkey", {})
-            from .settings_window import format_hotkey
-            hotkey_display = format_hotkey(hk)
+            # The symbol is _format_hotkey; importing a non-existent
+            # format_hotkey raised ImportError (swallowed below), so the
+            # Ready screen always showed the stale default hotkey.
+            from .settings_window import _format_hotkey
+            hotkey_display = _format_hotkey(hk)
         except Exception:
-            pass
+            logger.warning("Could not format activation hotkey for Ready step", exc_info=True)
 
         self._label(
             f"Hold {hotkey_display} to speak.\nText is typed at your cursor on release.\n\nAccess settings from the menu bar icon.",
@@ -414,40 +420,38 @@ class SetupWizard:
 
     def _download_asr(self):
         """Download ASR model in background."""
-        self._asr_status.setStringValue_("Downloading ASR model...")
-        self._asr_status.setTextColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
-        )
+        green = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
+        amber = NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
+        # Capture the specific label so a late callback can't write to a label
+        # that step navigation has since replaced.
+        status_label = self._asr_status
+        status_label.setStringValue_("Downloading ASR model...")
+        status_label.setTextColor_(amber)
 
         def _do_download():
             try:
                 from huggingface_hub import snapshot_download
                 model_id = self._app._settings.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
                 snapshot_download(model_id, local_files_only=False)
-
-                # Update UI on main thread
-                from AppKit import NSObject as _NSO
-                class _Updater(_NSO):
-                    def update_(self_, sender):
-                        self._asr_status.setStringValue_("\u2713 ASR model ready!")
-                        self._asr_status.setTextColor_(
-                            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
-                        )
-                u = _Updater.alloc().init()
-                self._targets.add(u)
-                u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+                self._safe_status_update(
+                    status_label, "\u2713 ASR model ready!", green, only_on_step=3
+                )
             except Exception as e:
                 logger.warning("ASR download failed: %s", e)
-                self._asr_status.setStringValue_(f"Download failed: {e}")
+                # Route the failure update through the main thread too.
+                self._safe_status_update(
+                    status_label, f"Download failed: {e}", NSColor.redColor(), only_on_step=3
+                )
 
         threading.Thread(target=_do_download, daemon=True).start()
 
     def _download_llm(self):
         """Pull Ollama LLM model in background."""
-        self._llm_status.setStringValue_("Pulling LLM model...")
-        self._llm_status.setTextColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
-        )
+        green = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
+        amber = NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
+        status_label = self._llm_status
+        status_label.setStringValue_("Pulling LLM model...")
+        status_label.setTextColor_(amber)
 
         def _do_pull():
             try:
@@ -456,27 +460,54 @@ class SetupWizard:
                     ["ollama", "pull", model],
                     capture_output=True, text=True, timeout=600,
                 )
-
-                from AppKit import NSObject as _NSO
-                class _Updater(_NSO):
-                    def update_(self_, sender):
-                        if result.returncode == 0:
-                            self._llm_status.setStringValue_("\u2713 LLM model ready!")
-                            self._llm_status.setTextColor_(
-                                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
-                            )
-                        else:
-                            self._llm_status.setStringValue_(f"Pull failed: {result.stderr[:40]}")
-                u = _Updater.alloc().init()
-                self._targets.add(u)
-                u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+                if result.returncode == 0:
+                    self._safe_status_update(
+                        status_label, "\u2713 LLM model ready!", green, only_on_step=3
+                    )
+                else:
+                    self._safe_status_update(
+                        status_label, f"Pull failed: {result.stderr[:40]}",
+                        NSColor.redColor(), only_on_step=3,
+                    )
             except Exception as e:
                 logger.warning("LLM pull failed: %s", e)
-                self._llm_status.setStringValue_(f"Pull failed: {e}")
+                self._safe_status_update(
+                    status_label, f"Pull failed: {e}", NSColor.redColor(), only_on_step=3
+                )
 
         threading.Thread(target=_do_pull, daemon=True).start()
 
     # --- Helpers ---
+
+    def _safe_status_update(self, label, text, color=None, only_on_step=None):
+        """Update an NSTextField from any thread, on the main thread.
+
+        AppKit views must only be mutated on the main thread, so this always
+        hops via performSelectorOnMainThread. It also skips the update if the
+        wizard has navigated away from *only_on_step* or the label has been
+        removed from the view hierarchy, so a late download callback can't
+        write to a stale/dead label.
+        """
+        updater_self = self
+
+        class _Updater(NSObject):
+            def update_(self_, sender):
+                try:
+                    if only_on_step is not None and updater_self._current_step != only_on_step:
+                        return
+                    if updater_self._window is None or not updater_self._window.isVisible():
+                        return
+                    if label is None or label.superview() is None:
+                        return
+                    label.setStringValue_(text)
+                    if color is not None:
+                        label.setTextColor_(color)
+                finally:
+                    updater_self._targets.discard(self_)
+
+        u = _Updater.alloc().init()
+        self._targets.add(u)
+        u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
 
     def _label(self, text, size, bold=False, y=0, x=None, center=False, width=300, height=24):
         if x is None:

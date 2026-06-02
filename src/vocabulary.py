@@ -1,8 +1,11 @@
 """ASR hotwords and snippet replacement management."""
 import json
+import logging
 import os
 import re
 import threading
+
+logger = logging.getLogger(__name__)
 
 
 class VocabularyManager:
@@ -18,11 +21,22 @@ class VocabularyManager:
         self._load()
 
     def _load(self):
-        if os.path.exists(self._path):
-            with open(self._path) as f:
+        if not os.path.exists(self._path):
+            return
+        try:
+            with open(self._path, encoding="utf-8") as f:
                 data = json.load(f)
-            self._hotwords = data.get("hotwords", [])
-            self._snippets = data.get("snippets", {})
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            # Corrupt / unreadable vocabulary file must never block app startup.
+            logger.warning("Failed to load vocabulary from %s: %s; using empty defaults", self._path, exc)
+            return
+        if not isinstance(data, dict):
+            logger.warning("Vocabulary file %s is not a JSON object; using empty defaults", self._path)
+            return
+        hotwords = data.get("hotwords", [])
+        snippets = data.get("snippets", {})
+        self._hotwords = hotwords if isinstance(hotwords, list) else []
+        self._snippets = snippets if isinstance(snippets, dict) else {}
 
     def _save(self):
         with open(self._path, "w") as f:
@@ -57,7 +71,15 @@ class VocabularyManager:
         return dict(self._snippets)
 
     def apply_snippets(self, text: str) -> str:
-        for trigger, replacement in self._snippets.items():
+        # Snapshot under the lock so a concurrent add/remove on another thread
+        # can't raise "dictionary changed size during iteration" mid-dictation.
+        with self._lock:
+            items = list(self._snippets.items())
+        for trigger, replacement in items:
             pattern = re.compile(re.escape(trigger), re.IGNORECASE)
-            text = pattern.sub(replacement, text)
+            # Pass the replacement through a function so re.sub treats it as a
+            # literal string. Otherwise a replacement containing a backslash
+            # (e.g. r"C:\Users") or a group ref (r"\1") raises re.error and
+            # destroys the entire transcript.
+            text = pattern.sub(lambda _m, r=replacement: r, text)
         return text
