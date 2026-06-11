@@ -73,7 +73,7 @@ def _run_on_main(block):
 from .audio_capture import AudioCapture
 from .asr_engine import ASREngine
 from .text_injector import TextInjector
-from .hotkey_manager import HotkeyManager
+from .hotkey_manager import HotkeyManager, describe_hotkey
 from .overlay import FloatingOverlay
 from .settings_manager import SettingsManager, SUPPORTED_LANGUAGES
 from .settings_window import SettingsWindow
@@ -173,6 +173,20 @@ class SafeVoiceApp(rumps.App):
         # Components
         self._audio = AudioCapture(sample_rate=16000, channels=1, blocksize=1024)
         asr_model = self._settings.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
+        # Guard against a persisted model this build cannot run (the catalog
+        # used to offer whisper/cloud engines with no dispatch): fall back to
+        # the default instead of wedging at "Error" on every launch. Unknown
+        # IDs (hand-edited custom repos) pass through untouched.
+        from .llm_backend import ASR_MODELS, IMPLEMENTED_ASR_ENGINES
+        catalog_entry = next(
+            (m for m in ASR_MODELS if m["id"] == asr_model), None
+        )
+        if catalog_entry is not None and catalog_entry["engine"] not in IMPLEMENTED_ASR_ENGINES:
+            logger.warning(
+                "Saved ASR model %s needs unimplemented engine %s; using default",
+                asr_model, catalog_entry["engine"],
+            )
+            asr_model = "Qwen/Qwen3-ASR-0.6B"
         self._asr = ASREngine(model_id=asr_model)
         self._injector = TextInjector()
         self._hotkey = HotkeyManager()
@@ -256,15 +270,20 @@ class SafeVoiceApp(rumps.App):
         self._mode_menu.add(self._ptt_item)
         self._mode_menu.add(self._toggle_item)
 
-        # Processing modes submenu
+        # Processing modes submenu. Items are clickable and switch the
+        # active mode; titles are plain names because per-mode GLOBAL
+        # hotkeys are not dispatched anywhere yet, and advertising them in
+        # the menu misled users into pressing dead key combos.
         self._modes_menu = rumps.MenuItem("Processing Mode")
         for mode in self._modes.get_all():
-            hotkey_str = ""
-            if mode.hotkey:
-                mods = "+".join(m.title() for m in mode.hotkey.get("modifiers", []))
-                key = mode.hotkey.get("key", "").title()
-                hotkey_str = f" ({mods}+{key})" if mods else f" ({key})"
-            item = rumps.MenuItem(f"{mode.name}{hotkey_str}")
+            item = rumps.MenuItem(
+                mode.name,
+                callback=self._make_processing_mode_callback(mode.name),
+            )
+            item.state = (
+                self._active_mode is not None
+                and mode.name == self._active_mode.name
+            )
             self._modes_menu[item.title] = item
 
         # Dashboard
@@ -298,10 +317,32 @@ class SafeVoiceApp(rumps.App):
         ]
 
     def _make_language_callback(self, index):
-        """Create a callback for language selection."""
+        """Create a callback for language selection from the menubar."""
         def callback(_):
             self._set_language(index)
+            # Persist the menubar choice so it survives relaunch and the
+            # settings window shows the same value. SettingsManager.set is
+            # a no-op on equal values, so the change callback cannot loop.
+            self._settings.set("languages", [LANGUAGES[index]["name"]])
         return callback
+
+    def _make_processing_mode_callback(self, name):
+        """Create a callback that switches the active processing mode."""
+        def callback(_):
+            self._set_active_processing_mode(name)
+        return callback
+
+    def _set_active_processing_mode(self, name):
+        """Switch the active processing mode and update menu checkmarks."""
+        mode = self._modes.get(name)
+        if mode is None:
+            logger.warning("Unknown processing mode: %s", name)
+            return
+        self._active_mode = mode
+        for key in self._modes_menu.keys():
+            self._modes_menu[key].state = (key == name)
+        self._update_status(f"Mode: {name}")
+        logger.info("Processing mode switched to %s", name)
 
     def _set_language(self, index):
         """Switch to a language by index."""
@@ -320,6 +361,20 @@ class SafeVoiceApp(rumps.App):
 
         print(f"[SafeVoice] Language: {lang['name']}")
 
+    def _activate_hotkey_label(self) -> str:
+        """Human-readable label for the CONFIGURED activation hotkey.
+
+        Every user-facing hotkey string must come from here: the old
+        hardcoded "Left ⌥" text was wrong even for fresh installs (the
+        persisted default is ⌥+Space) and stayed wrong after the user
+        recorded a custom hotkey in Settings.
+        """
+        hk = self._settings.get(
+            "activate_hotkey", {"key": "space", "modifiers": ["alt"]}
+        )
+        label = describe_hotkey(hk)
+        return label if label != "None" else "the activation hotkey"
+
     def _set_push_to_talk(self, _):
         """Switch to push-to-talk mode and persist the choice."""
         logger.info("Menu callback: switching to push_to_talk mode")
@@ -332,7 +387,7 @@ class SafeVoiceApp(rumps.App):
         rumps.notification(
             "SafeVoice",
             "Mode: Hold to Talk",
-            "Hold Left ⌥ to record, release to transcribe.",
+            f"Hold {self._activate_hotkey_label()} to record, release to transcribe.",
         )
 
     def _set_toggle_mode(self, _):
@@ -352,25 +407,24 @@ class SafeVoiceApp(rumps.App):
         rumps.notification(
             "SafeVoice",
             "Mode: Toggle On/Off",
-            "Press Left ⌥ once to start recording, again to stop.",
+            f"Press {self._activate_hotkey_label()} once to start recording, again to stop.",
         )
 
     def _refresh_hotkey_info_label(self):
-        """Update the menubar's Hotkey info line to match current mode.
+        """Update the menubar's Hotkey info line to match mode AND hotkey.
 
-        Hold-to-talk mode reads as "Hold Left ⌥"; toggle mode reads as
-        "Press Left ⌥ to start, again to stop" so users understand the
-        new behavior without checking docs. Called from __init__ (initial
-        state) and both _set_*_mode handlers.
+        Called from __init__, both _set_*_mode handlers, and whenever the
+        activate_hotkey setting changes.
         """
         if not hasattr(self, "_hotkey_info_item"):
             return
+        label = self._activate_hotkey_label()
         if self._mode == "toggle":
             self._hotkey_info_item.title = (
-                "Hotkey: Press Left ⌥ to start, again to stop"
+                f"Hotkey: Press {label} to start, again to stop"
             )
         else:
-            self._hotkey_info_item.title = "Hotkey: Hold Left ⌥ (Left Option)"
+            self._hotkey_info_item.title = f"Hotkey: Hold {label}"
 
     def _start_model_load(self):
         """Load the ASR model in a background thread."""
@@ -506,6 +560,20 @@ class SafeVoiceApp(rumps.App):
 
         elif key == "activate_hotkey":
             self._hotkey.set_activate_hotkey(new_value)
+            self._refresh_hotkey_info_label()
+
+        elif key == "asr_model":
+            # The engine is constructed once at startup; tell the user the
+            # change is saved but not live, instead of silently doing
+            # nothing for the rest of the session.
+            try:
+                rumps.notification(
+                    "SafeVoice",
+                    "ASR model saved",
+                    "The new speech model loads on the next launch.",
+                )
+            except Exception:
+                logger.debug("Could not post ASR-model notification", exc_info=True)
 
     def _get_asr_language(self, languages):
         """Determine the ASR language from the languages setting list."""

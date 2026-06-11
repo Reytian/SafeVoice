@@ -86,6 +86,11 @@ def _describe_config(config: Dict[str, Any]) -> str:
     return "+".join(parts) if parts else "None"
 
 
+def describe_hotkey(config: Dict[str, Any]) -> str:
+    """Public alias of _describe_config for UI labels (menubar, notifications)."""
+    return _describe_config(config)
+
+
 # ---------------------------------------------------------------------------
 # HotkeyManager
 # ---------------------------------------------------------------------------

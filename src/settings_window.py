@@ -55,6 +55,7 @@ from .llm_backend import (
     CLOUD_DEFAULTS,
     ASR_MODELS,
     CLOUD_LLM_MODELS,
+    IMPLEMENTED_ASR_ENGINES,
     find_ollama,
     is_asr_model_downloaded,
     is_reasoning_model,
@@ -1301,9 +1302,14 @@ class SettingsWindow:
             NSMakeRect(_TAB_PADDING + 55, y, 280, 24), False)
         self._asr_model_popup.setFont_(NSFont.systemFontOfSize_(12.0))
 
-        # Build dropdown items grouped by Local / Cloud
-        local_models = [m for m in ASR_MODELS if not m["engine"].startswith("cloud")]
-        cloud_models = [m for m in ASR_MODELS if m["engine"].startswith("cloud")]
+        # Build dropdown items grouped by Local / Cloud. Only engines the
+        # ASR loader implements are offered: the catalog's whisper/cloud
+        # entries have no dispatch yet, and persisting one bricked startup.
+        implemented = [
+            m for m in ASR_MODELS if m["engine"] in IMPLEMENTED_ASR_ENGINES
+        ]
+        local_models = [m for m in implemented if not m["engine"].startswith("cloud")]
+        cloud_models = [m for m in implemented if m["engine"].startswith("cloud")]
 
         # Add separator-style header for Local section
         menu = self._asr_model_popup.menu()
@@ -1323,18 +1329,26 @@ class SettingsWindow:
             if model["id"] == current_asr:
                 selected_idx = self._asr_model_popup.numberOfItems() - 1
 
-        cloud_header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("--- Cloud ---", None, "")
-        cloud_header.setEnabled_(False)
-        menu.addItem_(cloud_header)
-        self._asr_models_ordered.append(None)  # placeholder for header
+        if cloud_models:
+            cloud_header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("--- Cloud ---", None, "")
+            cloud_header.setEnabled_(False)
+            menu.addItem_(cloud_header)
+            self._asr_models_ordered.append(None)  # placeholder for header
 
-        for model in cloud_models:
-            title = f"{model['name']}"
-            self._asr_model_popup.addItemWithTitle_(title)
-            self._asr_models_ordered.append(model)
-            if model["id"] == current_asr:
-                selected_idx = self._asr_model_popup.numberOfItems() - 1
+            for model in cloud_models:
+                title = f"{model['name']}"
+                self._asr_model_popup.addItemWithTitle_(title)
+                self._asr_models_ordered.append(model)
+                if model["id"] == current_asr:
+                    selected_idx = self._asr_model_popup.numberOfItems() - 1
 
+        if selected_idx == 0:
+            # Persisted model was filtered out (or never set): select the
+            # first real model, not the disabled section header.
+            for i, m in enumerate(self._asr_models_ordered):
+                if m is not None:
+                    selected_idx = i
+                    break
         self._asr_model_popup.selectItemAtIndex_(selected_idx)
 
         # Wire dropdown change to show/hide API key fields
@@ -2145,6 +2159,29 @@ class SettingsWindow:
         activate = settings.get("activate_hotkey", {})
         if self._activate_hotkey_field:
             self._activate_hotkey_field.setStringValue_(_format_hotkey(activate))
+
+        # Models tab: re-select the PERSISTED LLM source and ASR model.
+        # These controls used to keep their last-clicked visual state across
+        # hide/show, so reopening the window and hitting Apply could switch
+        # the backend to something the user never chose this session.
+        source = settings.get("llm_source", "local")
+        if getattr(self, "_llm_local_btn", None) is not None:
+            self._llm_mlx_btn.setState_(NSOnState if source == "mlx" else NSOffState)
+            self._llm_local_btn.setState_(NSOnState if source == "local" else NSOffState)
+            self._llm_cloud_btn.setState_(NSOnState if source == "cloud" else NSOffState)
+            self._mlx_panel.setHidden_(source != "mlx")
+            self._local_panel.setHidden_(source != "local")
+            self._cloud_panel.setHidden_(source != "cloud")
+            if getattr(self, "_cloud_info_label", None) is not None:
+                self._cloud_info_label.setHidden_(source != "cloud")
+        asr_model = settings.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
+        popup = getattr(self, "_asr_model_popup", None)
+        if popup is not None:
+            for i, model in enumerate(getattr(self, "_asr_models_ordered", [])):
+                if model is not None and model["id"] == asr_model:
+                    popup.selectItemAtIndex_(i)
+                    self._on_asr_model_changed()
+                    break
 
     # ------------------------------------------------------------------
     # Helpers

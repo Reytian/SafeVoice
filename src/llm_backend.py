@@ -555,6 +555,12 @@ def get_backend(
 
 
 # ASR Model Catalog
+# Engines ASREngine can actually run today. The catalog below also lists
+# whisper/cloud entries for a future engine dispatch, but they MUST NOT be
+# offered in the UI until implemented: selecting one used to persist a model
+# the loader cannot start, wedging every subsequent launch at "Error".
+IMPLEMENTED_ASR_ENGINES = {"mlx-qwen3-asr"}
+
 ASR_MODELS = [
     {
         "id": "Qwen/Qwen3-ASR-0.6B",
