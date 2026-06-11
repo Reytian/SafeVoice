@@ -71,11 +71,14 @@ _TEXT_FIELD_MIN_WIDTH = 140.0  # Minimum width for the transcription label.
 
 _FADE_DURATION = 0.1          # Duration (seconds) for fade-in / fade-out.
 
-# Status dot colours.
+# Status dot colours. "done" must stay in this dict: set_status() rejects
+# unknown statuses, and the OK-badge branch below is unreachable without it
+# (which is exactly how the success flash was dead code for months).
 _STATUS_COLORS = {
     "listening":  NSColor.colorWithCalibratedRed_green_blue_alpha_(0.30, 0.85, 0.40, 1.0),
     "processing": NSColor.colorWithCalibratedRed_green_blue_alpha_(1.00, 0.75, 0.00, 1.0),
     "error":      NSColor.colorWithCalibratedRed_green_blue_alpha_(1.00, 0.30, 0.30, 1.0),
+    "done":       NSColor.colorWithCalibratedRed_green_blue_alpha_(0.30, 0.85, 0.40, 1.0),
 }
 
 
@@ -260,7 +263,8 @@ class FloatingOverlay:
         """Set the recording status indicator.
 
         Args:
-            status: One of ``'listening'``, ``'processing'``, or ``'error'``.
+            status: One of ``'listening'``, ``'processing'``, ``'done'``,
+                or ``'error'``.
         """
         if status not in _STATUS_COLORS:
             return
@@ -516,8 +520,13 @@ class FloatingOverlay:
         def _do_resize():
             if self._panel is None:
                 return
+            ns_screen = NSScreen.mainScreen()
+            if ns_screen is None:
+                # Displays asleep / disconnected; skip rather than crash on
+                # None (the sibling _reposition already guards this).
+                return
             frame = self._panel.frame()
-            screen = NSScreen.mainScreen().visibleFrame()
+            screen = ns_screen.visibleFrame()
             new_x = screen.origin.x + (screen.size.width - new_width) / 2
             new_frame = NSMakeRect(new_x, frame.origin.y, new_width, frame.size.height)
             NSAnimationContext.beginGrouping()

@@ -974,6 +974,16 @@ class SafeVoiceApp(rumps.App):
         success = self._injector.inject(text)
         if success:
             print(f"[SafeVoice] Injected {len(text)} chars")
+            # Brief success flash. The overlay is hidden BEFORE the paste to
+            # avoid stealing focus, which left the user with no completion
+            # signal at all; the wizard's Demo step even promises this state.
+            # The overlay panel is non-activating, so re-showing it cannot
+            # take focus from the app that just received the text.
+            self._overlay.show(language=badge)
+            self._overlay.set_status("done")
+            self._overlay.update_text("Pasted")
+            time.sleep(0.35)
+            self._overlay.hide()
         else:
             print(f"[SafeVoice] Injection failed ({len(text)} chars; kept on clipboard)")
             # Re-copy so the changeCount guard skips the injector's restore and
