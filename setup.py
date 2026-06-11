@@ -25,20 +25,24 @@ OPTIONS = {
         "CFBundleVersion": "1.0.0",
         "CFBundleShortVersionString": "1.0.0",
         "LSMinimumSystemVersion": "14.0",
+        "LSApplicationCategoryType": "public.app-category.productivity",
+        "NSHumanReadableCopyright": "Copyright © 2026 SafeVoice",
         "NSMicrophoneUsageDescription": (
             "SafeVoice needs microphone access to transcribe your speech."
         ),
-        "NSAppleEventsUsageDescription": (
-            "SafeVoice needs accessibility access to type text into other apps."
-        ),
+        # Accessibility (text injection via CGEventPost) has NO Info.plist
+        # usage-description key; it is granted manually in System Settings.
+        # The NSAppleEventsUsageDescription that used to sit here was removed:
+        # the app sends no Apple Events, and the text misdescribed it anyway.
         "LSUIElement": False,  # Show in Dock so user can click to open dashboard
         "NSMainNibFile": "",  # No nib — rumps manages the menu
     },
     "packages": [
         "mlx_qwen3_asr",
         "mlx",
+        "mlx_lm",
         "sounddevice",
-        "pynput",
+        "_sounddevice_data",  # ships libportaudio; standalone builds crash on import without it
         "rumps",
         "numpy",
         "huggingface_hub",
@@ -53,13 +57,23 @@ OPTIONS = {
         "src.app",
         "src.asr_engine",
         "src.audio_capture",
+        "src.audio_preprocess",
+        "src.dashboard_window",
+        "src.history",
+        "src.history_window",
         "src.hotkey_manager",
-        "src.text_injector",
+        "src.llm_backend",
+        "src.llm_cleanup",
+        "src.modes",
         "src.overlay",
+        "src.privacy",
         "src.settings_manager",
         "src.settings_window",
-        "src.dashboard_window",
-        "src.llm_cleanup",
+        "src.setup_wizard",
+        "src.single_instance",
+        "src.text_injector",
+        "src.text_postprocess",
+        "src.vocabulary",
     ],
 }
 

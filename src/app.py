@@ -580,9 +580,10 @@ class SafeVoiceApp(rumps.App):
                 self._start_model_load()
                 # Fallback: if the user clicked through the Permissions step
                 # without granting, fire the Accessibility prompt now so the
-                # hotkey can ever start working.
+                # hotkey can ever start working. Async: the prompting call
+                # can block until the dialog is answered.
                 if not TextInjector.check_accessibility_permission():
-                    self._hotkey.request_accessibility_permission()
+                    self._hotkey.request_accessibility_permission_async()
             self._wizard = SetupWizard(self, on_complete=on_complete)
             self._wizard.show()
 
