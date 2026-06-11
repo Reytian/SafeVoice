@@ -115,7 +115,7 @@ class TextInjector:
 
         try:
             # --- 2. Write desired text to clipboard -------------------
-            if not self._write_clipboard(pb, text):
+            if not self._write_clipboard(pb, text, transient=True):
                 logger.error("Failed to write text to clipboard.")
                 return False
 
@@ -155,10 +155,27 @@ class TextInjector:
             return None
 
     @staticmethod
-    def _write_clipboard(pb: NSPasteboard, text: str) -> bool:
-        """Replace clipboard contents with *text*. Returns success flag."""
+    def _write_clipboard(pb: NSPasteboard, text: str, transient: bool = False) -> bool:
+        """Replace clipboard contents with *text*. Returns success flag.
+
+        With ``transient=True`` the write carries the nspasteboard.org
+        organizational types, so well-behaved clipboard managers neither
+        archive the dictation in their history nor display it: the inject
+        copy-paste-restore dance is an implementation detail, not a user
+        copy. The rescue copy (manual paste after a failed injection) stays
+        non-transient on purpose so the user can find it in their manager.
+        """
         try:
             pb.clearContents()
+            if transient:
+                pb.declareTypes_owner_(
+                    [
+                        NSPasteboardTypeString,
+                        "org.nspasteboard.TransientType",
+                        "org.nspasteboard.ConcealedType",
+                    ],
+                    None,
+                )
             result = pb.setString_forType_(text, NSPasteboardTypeString)
             return bool(result)
         except Exception:
