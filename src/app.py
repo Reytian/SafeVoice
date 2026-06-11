@@ -238,7 +238,11 @@ class SafeVoiceApp(rumps.App):
         self._audio_chunks = []
         self._audio_lock = threading.Lock()
 
-        self._speculative_interval = 3.0  # seconds between speculative attempts
+        # Seconds between preview/speculative passes. Effective cadence is
+        # interval + inference time (the loop waits, then transcribes).
+        self._speculative_interval = 2.5
+        self._listen_started = 0.0
+        self._session_peak_level = 0.0
 
         # Apply saved settings before building menu
         self._apply_saved_settings()
@@ -795,6 +799,12 @@ class SafeVoiceApp(rumps.App):
 
         lang = LANGUAGES[self._language_index]
 
+        # Session telemetry for the preview worker: when the recording
+        # started and the loudest level seen so far (for the silent-mic hint).
+        # Set BEFORE audio.start so the first chunk callback sees them.
+        self._listen_started = time.monotonic()
+        self._session_peak_level = 0.0
+
         try:
             self._audio.start(callback=self._on_audio_chunk)
         except Exception:
@@ -807,9 +817,10 @@ class SafeVoiceApp(rumps.App):
         self._update_status("Listening...")
         self._overlay.show(language=lang["badge"])
 
-        # Start speculative LLM if using a custom mode
-        if self._active_mode.prompt_template and self._llm.is_available():
-            self._start_speculative_timer()
+        # Preview/speculative worker runs for EVERY recording: it shows live
+        # partial transcription in the overlay (and the silent-mic hint), and
+        # additionally pre-runs the LLM when a custom mode is active.
+        self._start_speculative_timer()
 
         print("[SafeVoice] Listening...")
         return True
@@ -819,8 +830,12 @@ class SafeVoiceApp(rumps.App):
         with self._audio_lock:
             self._audio_chunks.append(chunk.copy())
 
-        # Update overlay with audio level
+        # Update overlay with audio level, and remember the session peak so
+        # the preview worker can tell "user is quiet" from "mic delivers
+        # digital silence" (muted, denied permission, wrong device).
         level = self._audio.get_level()
+        if level > self._session_peak_level:
+            self._session_peak_level = level
         self._overlay.update_level(level)
 
     def _stop_listening_and_transcribe(self):
@@ -993,8 +1008,20 @@ class SafeVoiceApp(rumps.App):
         template = (mode.prompt_template or "").lower()
         return "translat" in template or "翻译" in template
 
+    # Below this RMS peak the stream is effectively digital silence (muted
+    # mic, denied permission, dead device); normal quiet speech sits well
+    # above it. Used for the "no audio" hint during recording.
+    _SILENCE_PEAK_THRESHOLD = 0.005
+    _SILENCE_HINT_AFTER_SEC = 5.0
+
     def _start_speculative_timer(self):
-        """Periodically run ASR on captured audio and speculatively send to LLM."""
+        """Periodically transcribe the captured audio while recording.
+
+        Runs for every recording: each pass shows the partial transcription
+        in the overlay (live preview) or a silent-mic hint, and when a custom
+        mode + LLM are active it also pre-runs the cleanup speculatively so
+        the final result is often cache-hit instant.
+        """
         self._speculative_timer_stop = threading.Event()
 
         def _speculate():
@@ -1005,13 +1032,30 @@ class SafeVoiceApp(rumps.App):
                     if not self._audio_chunks:
                         continue
                     audio_so_far = np.concatenate(self._audio_chunks)
+                elapsed = time.monotonic() - self._listen_started
+                if self._session_peak_level < self._SILENCE_PEAK_THRESHOLD:
+                    # Nothing but silence so far. Don't run ASR on it (the
+                    # model hallucinates on noise); after a few seconds tell
+                    # the user the mic looks dead.
+                    if elapsed >= self._SILENCE_HINT_AFTER_SEC:
+                        self._overlay.update_text(
+                            "No audio detected. Is the mic muted?"
+                        )
+                    continue
                 if len(audio_so_far) < 16000:  # less than 1 second
                     continue
                 try:
                     cleaned = audio_preprocess.normalize_audio(audio_so_far)
                     text, _ = self._asr.transcribe(cleaned)
-                    if text.strip():
-                        text = self._vocabulary.apply_snippets(text)
+                    if not text.strip():
+                        continue
+                    text = self._vocabulary.apply_snippets(text)
+                    # Live preview of what has been heard so far. Re-check
+                    # state: the user may have released the key mid-pass and
+                    # the overlay now shows "Processing...".
+                    if self._state == STATE_LISTENING:
+                        self._overlay.update_text(text)
+                    if self._active_mode.prompt_template and self._llm.is_available():
                         prompt = self._active_mode.render_prompt(text.strip())
                         self._llm.speculative_cleanup(
                             text.strip(), custom_prompt=prompt,
