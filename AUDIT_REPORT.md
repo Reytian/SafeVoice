@@ -237,7 +237,63 @@ any other Mac as-is. Phased plan:
   `scripts/release.sh` that builds, signs, notarizes, staples, and produces the
   DMG.
 
-## Part 4. Findings reviewed and intentionally NOT acted on
+## Part 4. Round 2 ("ok. fix them"): recommendations implemented
+
+All Part 2 UX items and the Phase A distribution work were implemented on this
+branch in a second round (9 further commits):
+
+1. History window (menubar > History...): last 50 transcriptions with
+   timestamp/mode/language, full text on hover, per-row Copy, CSV export to
+   the Desktop, confirmed Clear All. HistoryStore gained clear().
+2. Live partial transcription: the overlay now shows what has been heard so
+   far (~every 3 s) during EVERY recording, plus a "No audio detected. Is the
+   mic muted?" hint when the stream is digital silence for 5 s (which also
+   stops ASR from hallucinating on noise). Custom modes keep the speculative
+   LLM pre-run on top.
+3. Model download UX: single owner (wizard on first run, app otherwise; no
+   more double 1.2 GB download), live byte progress in the wizard
+   ("412 MB / ~1,200 MB" from the HF blobs dir), honest menubar text
+   (downloading vs loading), and a failed load is retried by simply pressing
+   the hotkey instead of restarting the app.
+4. First-run permission sequencing: the Accessibility system dialog no longer
+   races ahead of the wizard; the wizard's Permissions step triggers it (and
+   registers the app in the pane), with a completion-time fallback. The mic
+   row got the same treatment in round 1.
+5. Modes menu rebuilds live when modes are added/renamed/deleted in Settings;
+   deleting the active mode falls back to Quick.
+6. Glanceable state: status line shows "Ready · <mode>" for non-default
+   modes; the dashboard status label is live (listening/transcribing/pasting)
+   instead of hardcoded "Ready".
+7. Human-readable overlay errors (mic unavailable / model loading /
+   transcription failed) instead of raw exception text.
+8. Clipboard etiquette: injected text is marked with org.nspasteboard
+   TransientType + ConcealedType so clipboard managers do not archive every
+   dictation; the rescue copy after a failed paste intentionally stays plain.
+9. Distribution Phase A done: setup.py packages _sounddevice_data + mlx_lm,
+   full includes list, honest Info.plist (no bogus Apple Events string,
+   category + copyright added), pynput removed everywhere, menubar icon
+   resolves via RESOURCEPATH inside a bundle, mlx-lm added to requirements
+   (the no-Ollama cleanup backend now actually works in a fresh env), and
+   scripts/build.sh gained --standalone plus a SAFEVOICE_PYTHON override.
+   KEY FINDING: py2app's modulegraph cannot scan PEP 420 namespace packages
+   ("No module named 'mlx'"); build.sh now shims an empty __init__.py into
+   mlx (idempotent, import-semantics-neutral) and the standalone build
+   SUCCEEDS on Python 3.14: 408 MB self-contained bundle, zero symlinks into
+   the checkout, Python.framework + libportaudio + mlx.metallib inside,
+   verified booting on this machine.
+
+Still open (needs your action or a later phase): Developer ID signing +
+notarization (requires your Apple Developer credentials), Keychain storage
+for API keys, moving the log out of /tmp for the shipped build, Sparkle
+updates, trimming dev-only packages (pytest, rich were swept into the
+bundle) via py2app "excludes", and global per-mode hotkeys. The last one is
+deliberately NOT wired: the event tap is listen-only
+(kCGEventTapOptionListenOnly), so a mode hotkey like Cmd+Alt+F would ALSO
+reach the focused app and trigger whatever that app binds it to; consuming
+keystrokes means switching the tap to an active filter, which risks the
+hard-won reliability of the activation path. Needs a design decision first.
+
+## Part 5. Findings reviewed and intentionally NOT acted on
 
 - Wizard NSTimer after closing the window with the X button: self-heals within one
   2 s tick (the timer's own visibility check invalidates it). Cosmetic.

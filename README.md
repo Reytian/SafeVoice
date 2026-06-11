@@ -91,6 +91,21 @@ Switch input modes and processing modes (Quick, Formal Writing, English Translat
 
 Select a language from the menubar dropdown or in Settings > Languages. Auto-detect handles mixed-language (code-switching) dictation.
 
+## Building the App
+
+```bash
+# Development build (alias mode: symlinks to source, instant rebuild)
+scripts/build.sh
+
+# Standalone build (self-contained .app, ~400 MB, runs without this checkout)
+scripts/build.sh --standalone
+```
+
+The standalone bundle embeds Python, all dependencies, and the native audio
+and Metal libraries. The ASR model still downloads to `~/.cache/huggingface`
+on first run. Distributing to other people additionally requires Developer ID
+code signing and notarization (see AUDIT_REPORT.md, Phase B).
+
 ## Project Structure
 
 ```
