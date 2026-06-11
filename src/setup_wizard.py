@@ -307,7 +307,9 @@ class SetupWizard:
         the app in the Accessibility pane the button opens.
         """
         try:
-            self._app._hotkey.request_accessibility_permission()
+            # Async: the prompting call can block until the dialog is
+            # answered, which would freeze the wizard UI on the main thread.
+            self._app._hotkey.request_accessibility_permission_async()
         except Exception:
             logger.warning("Could not request Accessibility permission", exc_info=True)
         self._open_acc_prefs()

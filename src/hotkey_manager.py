@@ -258,6 +258,20 @@ class HotkeyManager:
             logger.exception("Failed to request Accessibility permission")
         return False
 
+    def request_accessibility_permission_async(self) -> None:
+        """Fire the Accessibility prompt WITHOUT blocking the caller.
+
+        AXIsProcessTrustedWithOptions(prompt=True) can block inside tccd
+        until the user answers the dialog (observed on macOS 26 with a
+        fresh, untrusted standalone bundle: the whole launch froze in a
+        mach_msg wait before the menubar appeared). Callers on the startup
+        or main-thread path must use this; the 2 s permission poll picks up
+        the grant either way.
+        """
+        threading.Thread(
+            target=self.request_accessibility_permission, daemon=True
+        ).start()
+
     def _create_cg_tap(self) -> bool:
         """Create and start the CGEventTap. Returns True on success."""
         event_mask = (
@@ -304,11 +318,14 @@ class HotkeyManager:
         polls every 2 seconds until permission is granted, then (re)creates
         the tap automatically.
         """
-        if prompt_if_untrusted:
-            was_trusted = self.request_accessibility_permission()
-        else:
-            was_trusted = AXIsProcessTrusted()
-            if not was_trusted:
+        was_trusted = AXIsProcessTrusted()
+        if not was_trusted:
+            if prompt_if_untrusted:
+                # Prompt asynchronously: the prompting call can block until
+                # the dialog is answered, which froze startup on an
+                # untrusted (freshly installed/re-signed) bundle.
+                self.request_accessibility_permission_async()
+            else:
                 logger.info(
                     "Not trusted for Accessibility; deferring the system "
                     "dialog to the setup wizard (poll active)"
