@@ -18,6 +18,29 @@ logger = logging.getLogger(__name__)
 STEPS = ["Welcome", "Demo", "Permissions", "Model", "Tone", "Settings", "Test", "Ready"]
 
 
+def _hf_cache_downloaded_mb(model_id: str) -> float:
+    """Megabytes already on disk for *model_id* in the HuggingFace cache.
+
+    Sums only the blobs dir (real bytes, including .incomplete partials);
+    snapshot entries are symlinks into blobs and would double-count.
+    """
+    from pathlib import Path
+    safe_id = model_id.replace("/", "--")
+    blobs = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{safe_id}" / "blobs"
+    total = 0
+    try:
+        if blobs.is_dir():
+            for p in blobs.iterdir():
+                try:
+                    if p.is_file():
+                        total += p.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return 0.0
+    return total / (1024 * 1024)
+
+
 def _mic_permission_status() -> str:
     """Real microphone TCC state: granted | denied | undetermined | unknown.
 
@@ -522,18 +545,37 @@ class SetupWizard:
         status_label.setTextColor_(amber)
 
         def _do_download():
+            model_id = self._app._settings.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
+            done = threading.Event()
+
+            def _tick_progress():
+                # Real progress from bytes on disk, every 2 s. A bare
+                # "Downloading..." label looked frozen for the several
+                # minutes a 1.2 GB pull takes.
+                while not done.wait(2.0):
+                    mb = _hf_cache_downloaded_mb(model_id)
+                    self._safe_status_update(
+                        status_label,
+                        f"Downloading ASR model... {mb:,.0f} MB / ~1,200 MB",
+                        amber, only_on_step=3,
+                    )
+
+            threading.Thread(target=_tick_progress, daemon=True).start()
             try:
                 from huggingface_hub import snapshot_download
-                model_id = self._app._settings.get("asr_model", "Qwen/Qwen3-ASR-0.6B")
                 snapshot_download(model_id, local_files_only=False)
+                done.set()
                 self._safe_status_update(
                     status_label, "\u2713 ASR model ready!", green, only_on_step=3
                 )
             except Exception as e:
+                done.set()
                 logger.warning("ASR download failed: %s", e)
                 # Route the failure update through the main thread too.
                 self._safe_status_update(
-                    status_label, f"Download failed: {e}", NSColor.redColor(), only_on_step=3
+                    status_label,
+                    "Download failed (check network). Click Download to retry.",
+                    NSColor.redColor(), only_on_step=3,
                 )
 
         threading.Thread(target=_do_download, daemon=True).start()

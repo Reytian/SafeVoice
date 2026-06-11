@@ -256,8 +256,17 @@ class SafeVoiceApp(rumps.App):
             on_deactivate=self._on_hotkey_deactivate,
         )
 
-        # Preload model in background
-        self._start_model_load()
+        # Preload model in background. On a true first run with no model on
+        # disk the setup wizard owns the download (it has visible progress);
+        # starting a load here too used to kick off a SECOND concurrent
+        # download of the same 1.2 GB repo. If the user skips or closes the
+        # wizard, the first hotkey press triggers the load on demand.
+        self._model_loading = False
+        if self._settings.get("first_run", True) and not ASREngine.is_model_downloaded():
+            logger.info("First run without model: deferring download to the setup wizard")
+            self._update_status("Finish setup to download the speech model")
+        else:
+            self._start_model_load()
 
         # Show setup wizard on first run (deferred until event loop is running)
         if self._settings.get("first_run", True):
@@ -482,11 +491,25 @@ class SafeVoiceApp(rumps.App):
             self._hotkey_info_item.title = f"Hotkey: Hold {label}"
 
     def _start_model_load(self):
-        """Load the ASR model in a background thread."""
+        """Load the ASR model in a background thread (download if missing).
+
+        Idempotent: a second call while a load is in flight is a no-op, and
+        a FAILED load can be retried simply by pressing the hotkey (see
+        _on_hotkey_activate) instead of restarting the app.
+        """
+        if self._model_loading or self._asr.is_loaded:
+            return
+        self._model_loading = True
+        downloading = not ASREngine.is_model_downloaded()
+
         def load():
             try:
                 logger.info("Background model load thread started")
                 self._set_state(STATE_LOADING)
+                if downloading:
+                    self._update_status("Downloading speech model (~1.2 GB)...")
+                else:
+                    self._update_status("Loading speech model...")
                 self._asr.load_model()
                 self._set_state(STATE_IDLE)
                 self._update_status(self._idle_status_text())
@@ -502,10 +525,20 @@ class SafeVoiceApp(rumps.App):
                 else:
                     print("[SafeVoice] LLM cleanup unavailable (install Ollama + `ollama pull qwen2.5:3b`)")
                     logger.warning("LLM cleanup unavailable")
-            except Exception as e:
+            except Exception:
+                logger.exception("Model load failed")
                 self._set_state(STATE_IDLE)
-                self._update_status(f"Error: {e}")
-                print(f"[SafeVoice] Model load failed: {e}")
+                self._update_status("Model load failed. Press the hotkey to retry.")
+                try:
+                    rumps.notification(
+                        "SafeVoice",
+                        "Speech model failed to load",
+                        "Check your network connection, then press the hotkey to retry.",
+                    )
+                except Exception:
+                    logger.debug("Could not post model-failure notification", exc_info=True)
+            finally:
+                self._model_loading = False
 
         t = threading.Thread(target=load, daemon=True)
         t.start()
@@ -515,6 +548,10 @@ class SafeVoiceApp(rumps.App):
         def launch():
             def on_complete():
                 self._settings.set("first_run", False)
+                # Startup defers the model load to the wizard on first run;
+                # make sure it happens once the wizard is done (no-op if the
+                # wizard's own download already let a load succeed).
+                self._start_model_load()
             self._wizard = SetupWizard(self, on_complete=on_complete)
             self._wizard.show()
 
@@ -759,7 +796,11 @@ class SafeVoiceApp(rumps.App):
                 return False
 
             if not self._asr.is_loaded:
-                self._update_status("Model loading...")
+                # Kick (or retry) the load on demand: covers a failed first
+                # load (offline) and a skipped/closed setup wizard, instead
+                # of answering "Model loading..." forever while nothing loads.
+                self._start_model_load()
+                self._update_status("Loading speech model...")
                 return False
 
             return self._start_listening()
