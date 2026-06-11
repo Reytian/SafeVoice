@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Generate the SafeVoice macOS app icon.
+Generate the SafeVoice macOS app icon ("Lockwave" mark).
 
-Creates a professional 1024x1024 icon featuring:
-- Deep blue-to-teal gradient background
-- A stylized shield shape representing "Safe"
-- A microphone silhouette with sound wave arcs inside the shield
-- Clean, modern, macOS-native aesthetic
+Design: a single white padlock whose keyhole is a three-bar waveform,
+centered on a macOS squircle (superellipse) filled with a diagonal
+deep-navy -> cyan gradient. One glyph, one gradient, no ornament: the
+lock silhouette stays legible at 16 px (menubar) while the waveform
+keyhole reads at Dock sizes and above.
 
 Outputs:
 - assets/icon_1024.png (1024x1024 source)
@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 # ---------------------------------------------------------------------------
@@ -32,447 +33,170 @@ ICONSET_DIR = os.path.join(ASSETS_DIR, "SafeVoice.iconset")
 os.makedirs(ASSETS_DIR, exist_ok=True)
 os.makedirs(ICONSET_DIR, exist_ok=True)
 
-SIZE = 1024  # master icon size
-# Render at 2x then downscale for anti-aliasing
-RENDER_SIZE = SIZE * 2
+SIZE = 1024      # master icon size
+RENDER_SIZE = SIZE * 2  # render at 2x, downscale for anti-aliasing
+
+# ---------------------------------------------------------------------------
+# Palette (diagonal gradient, top-left -> bottom-right)
+# ---------------------------------------------------------------------------
+GRAD_START = (10, 26, 82)     # deep indigo-navy
+GRAD_MID = (14, 79, 168)      # royal blue
+GRAD_END = (0, 194, 209)      # cyan
+GRAD_MID_POS = 0.55           # where the mid stop sits along the diagonal
+
+GLYPH_COLOR = (255, 255, 255, 255)
+
+# macOS Big Sur+ icon grid: the squircle occupies ~824/1024 of the canvas,
+# leaving transparent margin so the Dock shows a rounded shape, not a square.
+SQUIRCLE_FRACTION = 824 / 1024
+SQUIRCLE_EXPONENT = 5.0       # superellipse "squareness" (Apple-like)
+
+# Glyph geometry in a 0..150 design grid, mapped onto the squircle box.
+# Mirrors the approved SVG concept so preview and asset stay identical.
+DESIGN_GRID = 150.0
 
 
 # ---------------------------------------------------------------------------
-# Color palette
+# Background: diagonal three-stop gradient
 # ---------------------------------------------------------------------------
-BG_TOP = (12, 25, 70)         # deep navy blue
-BG_BOTTOM = (0, 160, 185)     # vibrant teal/cyan
+def make_diagonal_gradient(size: int) -> Image.Image:
+    """Diagonal gradient with a mid stop, computed vectorized via numpy."""
+    axis = np.linspace(0.0, 1.0, size, dtype=np.float32)
+    xx, yy = np.meshgrid(axis, axis)
+    t = (xx + yy) / 2.0  # 0 at top-left, 1 at bottom-right
+    # The squircle is inset from the canvas, so the raw diagonal never
+    # reaches its endpoints inside the visible shape; remap so full navy
+    # and full cyan both land within the squircle, not in cropped corners.
+    t = np.clip((t - 0.08) / 0.78, 0.0, 1.0)
 
-SHIELD_FILL_TOP = (20, 50, 110)    # dark blue
-SHIELD_FILL_BOT = (5, 120, 155)    # teal
+    start = np.array(GRAD_START, dtype=np.float32)
+    mid = np.array(GRAD_MID, dtype=np.float32)
+    end = np.array(GRAD_END, dtype=np.float32)
 
-MIC_COLOR = (255, 255, 255)
+    rgb = np.empty((size, size, 3), dtype=np.float32)
+    first = t < GRAD_MID_POS
+    t1 = (t / GRAD_MID_POS)[..., None]
+    t2 = ((t - GRAD_MID_POS) / (1.0 - GRAD_MID_POS))[..., None]
+    rgb = np.where(
+        first[..., None],
+        start + (mid - start) * t1,
+        mid + (end - mid) * t2,
+    )
+
+    out = np.empty((size, size, 4), dtype=np.uint8)
+    out[..., :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+    out[..., 3] = 255
+    return Image.fromarray(out, "RGBA")
 
 
 # ---------------------------------------------------------------------------
-# Helper: fast vertical linear gradient
+# Squircle (superellipse) mask
 # ---------------------------------------------------------------------------
-def make_gradient_fast(size: int, color_top: tuple, color_bottom: tuple) -> Image.Image:
-    """Fast vertical gradient using line drawing."""
-    img = Image.new("RGBA", (size, size))
-    draw = ImageDraw.Draw(img)
-    for y in range(size):
-        t = y / max(size - 1, 1)
-        r = int(color_top[0] + (color_bottom[0] - color_top[0]) * t)
-        g = int(color_top[1] + (color_bottom[1] - color_top[1]) * t)
-        b = int(color_top[2] + (color_bottom[2] - color_top[2]) * t)
-        draw.line([(0, y), (size - 1, y)], fill=(r, g, b, 255))
-    return img
-
-
-# ---------------------------------------------------------------------------
-# Helper: bezier interpolation for smooth shield curves
-# ---------------------------------------------------------------------------
-def cubic_bezier(p0, p1, p2, p3, num_points=50):
-    """Return points along a cubic bezier curve."""
+def squircle_mask(size: int, box_size: int, n: float = SQUIRCLE_EXPONENT) -> Image.Image:
+    """L-mode mask of a centered superellipse |x/a|^n + |y/a|^n = 1."""
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+    a = box_size / 2.0
+    cx = cy = size / 2.0
     points = []
-    for i in range(num_points + 1):
-        t = i / num_points
-        mt = 1 - t
-        x = mt**3 * p0[0] + 3 * mt**2 * t * p1[0] + 3 * mt * t**2 * p2[0] + t**3 * p3[0]
-        y = mt**3 * p0[1] + 3 * mt**2 * t * p1[1] + 3 * mt * t**2 * p2[1] + t**3 * p3[1]
+    steps = 720
+    for i in range(steps):
+        theta = 2.0 * math.pi * i / steps
+        ct, st = math.cos(theta), math.sin(theta)
+        x = cx + a * math.copysign(abs(ct) ** (2.0 / n), ct)
+        y = cy + a * math.copysign(abs(st) ** (2.0 / n), st)
         points.append((x, y))
-    return points
+    draw.polygon(points, fill=255)
+    return mask
 
 
 # ---------------------------------------------------------------------------
-# Helper: generate a proper shield polygon using bezier curves
+# Glyph: padlock with a waveform keyhole (punched through)
 # ---------------------------------------------------------------------------
-def shield_polygon(cx: float, cy: float, w: float, h: float) -> list:
-    """
-    Generate a classic heraldic shield shape using bezier curves.
-    The shield has:
-    - A flat top with rounded corners
-    - Sides that curve inward slightly then taper
-    - A pointed bottom
-    """
-    half_w = w / 2
-    half_h = h / 2
-    r = half_w * 0.18  # corner radius
+def glyph_mask(size: int, box_origin: float, box_size: float) -> Image.Image:
+    """L-mode mask of the lock glyph, bars punched out (0) of the body (255)."""
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
 
-    y_top = cy - half_h
-    y_bottom = cy + half_h
-    x_left = cx - half_w
-    x_right = cx + half_w
+    scale = box_size / DESIGN_GRID
+    # Slight enlargement around the grid center for optical presence
+    # (macOS glyphs typically claim a bit over half the squircle).
+    glyph_zoom = 1.06
+    grid_center = DESIGN_GRID / 2.0
 
-    points = []
+    def t(v: float) -> float:  # design-grid coordinate -> canvas
+        zoomed = grid_center + (v - grid_center) * glyph_zoom
+        return box_origin + zoomed * scale
 
-    # Top edge: from top-left-inner to top-right-inner
-    tl_inner = (x_left + r, y_top)
-    tr_inner = (x_right - r, y_top)
+    def s(v: float) -> float:  # design-grid length -> canvas
+        return v * scale * glyph_zoom
 
-    n_top = 30
-    for i in range(n_top + 1):
-        t = i / n_top
-        x = tl_inner[0] + (tr_inner[0] - tl_inner[0]) * t
-        points.append((x, y_top))
-
-    # Top-right rounded corner
-    n_corner = 20
-    corner_cx_r = x_right - r
-    corner_cy_r = y_top + r
-    for i in range(1, n_corner + 1):
-        angle = -math.pi / 2 + (math.pi / 2) * (i / n_corner)
-        x = corner_cx_r + r * math.cos(angle)
-        y = corner_cy_r + r * math.sin(angle)
-        points.append((x, y))
-
-    # Right side: two-segment bezier for a classic shield shape
-    # Upper portion: nearly vertical (keeps width)
-    # Lower portion: curves inward to the point
-    mid_y = cy + half_h * 0.20  # the "waist" where tapering begins
-
-    # Upper right: slight inward curve
-    p0 = (x_right, y_top + r)
-    p1 = (x_right, cy - half_h * 0.05)
-    p2 = (x_right - half_w * 0.02, cy + half_h * 0.05)
-    p3 = (x_right - half_w * 0.04, mid_y)
-    upper_right = cubic_bezier(p0, p1, p2, p3, num_points=30)
-    points.extend(upper_right[1:])
-
-    # Lower right: sweeps inward to bottom point
-    p0 = (x_right - half_w * 0.04, mid_y)
-    p1 = (x_right - half_w * 0.08, cy + half_h * 0.50)
-    p2 = (cx + half_w * 0.18, cy + half_h * 0.82)
-    p3 = (cx, y_bottom)
-    lower_right = cubic_bezier(p0, p1, p2, p3, num_points=40)
-    points.extend(lower_right[1:])
-
-    # Lower left: mirror of lower right
-    p0_l = (cx, y_bottom)
-    p1_l = (cx - half_w * 0.18, cy + half_h * 0.82)
-    p2_l = (x_left + half_w * 0.08, cy + half_h * 0.50)
-    p3_l = (x_left + half_w * 0.04, mid_y)
-    lower_left = cubic_bezier(p0_l, p1_l, p2_l, p3_l, num_points=40)
-    points.extend(lower_left[1:])
-
-    # Upper left: mirror of upper right
-    p0_l2 = (x_left + half_w * 0.04, mid_y)
-    p1_l2 = (x_left + half_w * 0.02, cy + half_h * 0.05)
-    p2_l2 = (x_left, cy - half_h * 0.05)
-    p3_l2 = (x_left, y_top + r)
-    upper_left = cubic_bezier(p0_l2, p1_l2, p2_l2, p3_l2, num_points=30)
-    points.extend(upper_left[1:])
-
-    # Top-left rounded corner
-    corner_cx_l = x_left + r
-    corner_cy_l = y_top + r
-    for i in range(1, n_corner + 1):
-        angle = math.pi + (math.pi / 2) * (i / n_corner)
-        x = corner_cx_l + r * math.cos(angle)
-        y = corner_cy_l + r * math.sin(angle)
-        points.append((x, y))
-
-    return points
-
-
-# ---------------------------------------------------------------------------
-# Helper: draw a microphone silhouette
-# ---------------------------------------------------------------------------
-def draw_microphone(draw: ImageDraw.Draw, cx: float, cy: float, s: float, color: tuple):
-    """
-    Draw a modern microphone icon.
-    s = scale factor relative to RENDER_SIZE.
-    """
-    # Mic capsule (pill shape)
-    cap_w = 72 * s
-    cap_h = 130 * s
-    cap_r = cap_w / 2
-    cap_top = cy - 75 * s
-    cap_bot = cap_top + cap_h
-
-    draw.rounded_rectangle(
-        [cx - cap_w / 2, cap_top, cx + cap_w / 2, cap_bot],
-        radius=cap_r,
-        fill=color,
+    # Shackle: upper half-ring centered at (75, 56), radius 20, stroke 13,
+    # with straight legs down to y=66 (the body overlaps the leg ends).
+    shackle_cx, shackle_cy = t(75), t(56)
+    r = s(20)
+    stroke = s(13)
+    outer = r + stroke / 2.0
+    draw.arc(
+        [shackle_cx - outer, shackle_cy - outer, shackle_cx + outer, shackle_cy + outer],
+        start=180, end=360, fill=255, width=max(1, round(stroke)),
     )
-
-    # Horizontal lines on capsule (mic grille detail)
-    grille_color = (SHIELD_FILL_TOP[0], SHIELD_FILL_TOP[1], SHIELD_FILL_TOP[2], 80)
-    line_spacing = 16 * s
-    line_start_y = cap_top + cap_r + 4 * s
-    line_end_y = cap_bot - cap_r - 4 * s
-    lw = max(int(2.5 * s), 1)
-
-    # We draw grille lines on a separate layer clipped to the capsule
-    grille_layer = Image.new("RGBA", draw.im.size, (0, 0, 0, 0))
-    gd = ImageDraw.Draw(grille_layer)
-    y = line_start_y
-    while y < line_end_y:
-        # Calculate the width at this y position (it's a pill shape)
-        # Distance from center of pill vertically
-        dist_from_center = abs(y - (cap_top + cap_bot) / 2)
-        if dist_from_center < cap_h / 2 - cap_r:
-            line_hw = cap_w / 2 - 8 * s
-        else:
-            # In the rounded part, calculate chord width
-            dy = dist_from_center - (cap_h / 2 - cap_r)
-            if dy < cap_r:
-                line_hw = math.sqrt(max(cap_r**2 - dy**2, 0)) - 8 * s
-            else:
-                line_hw = 0
-        if line_hw > 0:
-            gd.line([(cx - line_hw, y), (cx + line_hw, y)], fill=grille_color, width=lw)
-        y += line_spacing
-
-    return grille_layer
-
-    # Cradle (U-shape around capsule bottom)
-    cradle_margin = 20 * s
-    cradle_lw = max(int(9 * s), 2)
-    cradle_box = [
-        cx - cap_w / 2 - cradle_margin,
-        cap_top + cap_h * 0.2,
-        cx + cap_w / 2 + cradle_margin,
-        cap_bot + cradle_margin * 1.2,
-    ]
-    draw.arc(cradle_box, start=0, end=180, fill=color, width=cradle_lw)
-
-    # Stem
-    stem_w = 14 * s
-    stem_top = (cradle_box[1] + cradle_box[3]) / 2
-    stem_bot = cy + 85 * s
-    draw.rounded_rectangle(
-        [cx - stem_w / 2, stem_top, cx + stem_w / 2, stem_bot],
-        radius=stem_w / 2,
-        fill=color,
-    )
-
-    # Base
-    base_w = 72 * s
-    base_h = 14 * s
-    draw.rounded_rectangle(
-        [cx - base_w / 2, stem_bot - 2 * s, cx + base_w / 2, stem_bot + base_h],
-        radius=base_h / 2,
-        fill=color,
-    )
-
-
-def draw_mic_complete(img: Image.Image, cx: float, cy: float, s: float, color: tuple):
-    """Draw the full microphone assembly onto img."""
-    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-
-    # Mic capsule (pill shape)
-    cap_w = 72 * s
-    cap_h = 130 * s
-    cap_r = cap_w / 2
-    cap_top = cy - 75 * s
-    cap_bot = cap_top + cap_h
-
-    draw.rounded_rectangle(
-        [cx - cap_w / 2, cap_top, cx + cap_w / 2, cap_bot],
-        radius=cap_r,
-        fill=color,
-    )
-
-    # Cradle (U-shape around capsule bottom half)
-    cradle_margin = 22 * s
-    cradle_lw = max(int(9 * s), 2)
-    cradle_box = [
-        cx - cap_w / 2 - cradle_margin,
-        cap_top + cap_h * 0.18,
-        cx + cap_w / 2 + cradle_margin,
-        cap_bot + cradle_margin * 1.4,
-    ]
-    draw.arc(cradle_box, start=0, end=180, fill=color, width=cradle_lw)
-
-    # Stem from bottom of cradle arc to base
-    stem_w = 14 * s
-    cradle_mid_y = (cradle_box[1] + cradle_box[3]) / 2
-    stem_bot = cy + 95 * s
-    draw.rounded_rectangle(
-        [cx - stem_w / 2, cradle_mid_y, cx + stem_w / 2, stem_bot],
-        radius=stem_w / 2,
-        fill=color,
-    )
-
-    # Base
-    base_w = 74 * s
-    base_h = 14 * s
-    draw.rounded_rectangle(
-        [cx - base_w / 2, stem_bot - 3 * s, cx + base_w / 2, stem_bot + base_h],
-        radius=base_h / 2,
-        fill=color,
-    )
-
-    img.alpha_composite(layer)
-
-    # Now draw grille lines (clipped to capsule)
-    grille_layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    gd = ImageDraw.Draw(grille_layer)
-    grille_alpha = 60
-    grille_color_rgba = (SHIELD_FILL_TOP[0], SHIELD_FILL_TOP[1], SHIELD_FILL_TOP[2], grille_alpha)
-    line_spacing = 17 * s
-    lw = max(int(2.5 * s), 1)
-
-    y = cap_top + cap_r
-    while y < cap_bot - cap_r:
-        half = cap_w / 2 - 10 * s
-        if half > 0:
-            gd.line([(cx - half, y), (cx + half, y)], fill=grille_color_rgba, width=lw)
-        y += line_spacing
-
-    img.alpha_composite(grille_layer)
-
-
-# ---------------------------------------------------------------------------
-# Helper: draw sound wave arcs (clipped inside shield)
-# ---------------------------------------------------------------------------
-def draw_sound_waves(img: Image.Image, cx: float, cy: float, s: float, shield_mask: Image.Image):
-    """Draw concentric arc pairs emanating from mic head, clipped to shield."""
-    mic_head_cy = cy - 20 * s
-
-    radii = [105 * s, 148 * s, 190 * s]
-    arc_span = 32
-    line_widths = [int(10 * s), int(8 * s), int(6 * s)]
-    alphas = [180, 130, 80]
-
-    for i, (radius, lw) in enumerate(zip(radii, line_widths)):
-        color = (255, 255, 255, alphas[i])
-
-        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        ld = ImageDraw.Draw(layer)
-
-        box = [
-            cx - radius,
-            mic_head_cy - radius,
-            cx + radius,
-            mic_head_cy + radius,
-        ]
-
-        # Right arcs
-        ld.arc(box, start=-arc_span, end=arc_span, fill=color, width=lw)
-        # Left arcs
-        ld.arc(box, start=180 - arc_span, end=180 + arc_span, fill=color, width=lw)
-
-        # Clip to shield
-        layer.putalpha(
-            Image.composite(layer.getchannel("A"), Image.new("L", img.size, 0), shield_mask)
+    for leg_x in (t(55), t(95)):
+        draw.rectangle(
+            [leg_x - stroke / 2.0, shackle_cy, leg_x + stroke / 2.0, t(66)],
+            fill=255,
         )
 
-        img.alpha_composite(layer)
+    # Body
+    draw.rounded_rectangle(
+        [t(37), t(64), t(37 + 76), t(64 + 58)], radius=s(17), fill=255,
+    )
+
+    # Waveform keyhole: three bars punched out of the body.
+    bars = [  # (x, y, w, h) in design grid
+        (56, 84, 8, 18),
+        (71, 78, 8, 30),
+        (86, 84, 8, 18),
+    ]
+    for bx, by, bw, bh in bars:
+        draw.rounded_rectangle(
+            [t(bx), t(by), t(bx + bw), t(by + bh)], radius=s(bw) / 2.0, fill=0,
+        )
+
+    return mask
 
 
 # ---------------------------------------------------------------------------
-# Main icon generation
+# Icon assembly
 # ---------------------------------------------------------------------------
 def generate_icon() -> Image.Image:
-    """Generate the icon at RENDER_SIZE, then downscale to SIZE for anti-aliasing."""
-    RS = RENDER_SIZE
+    size = RENDER_SIZE
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
 
-    # 1. Gradient background
-    print("  Creating gradient background...")
-    icon = make_gradient_fast(RS, BG_TOP, BG_BOTTOM)
+    box_size = round(size * SQUIRCLE_FRACTION)
+    box_origin = (size - box_size) / 2.0
+    sq_mask = squircle_mask(size, box_size)
 
-    # 2. Subtle vignette (darken edges)
-    print("  Adding vignette...")
-    dark_layer = Image.new("RGBA", (RS, RS), (0, 0, 0, 0))
-    dd = ImageDraw.Draw(dark_layer)
-    dd.rectangle([0, 0, RS, RS], fill=(0, 0, 0, 55))
-    # Bright center mask
-    center_mask = Image.new("L", (RS, RS), 0)
-    cm_draw = ImageDraw.Draw(center_mask)
-    margin = RS * 0.05
-    cm_draw.ellipse([margin, margin, RS - margin, RS - margin], fill=255)
-    center_mask = center_mask.filter(ImageFilter.GaussianBlur(radius=RS * 0.12))
-    dark_layer.putalpha(
-        Image.eval(center_mask, lambda x: int(55 * (1 - x / 255)))
-    )
-    icon.alpha_composite(dark_layer)
+    # Soft baked shadow under the squircle (subtle, downward).
+    shadow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    shadow_layer = Image.new("RGBA", (size, size), (0, 0, 0, 60))
+    shadow.paste(shadow_layer, (0, round(size * 0.012)), sq_mask)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(size * 0.012))
+    canvas = Image.alpha_composite(canvas, shadow)
 
-    # 3. Shield
-    print("  Drawing shield...")
-    shield_cx = RS / 2
-    shield_cy = RS / 2 + RS * 0.02  # slight downward shift
-    shield_w = RS * 0.56
-    shield_h = RS * 0.62
+    # Gradient squircle
+    gradient = make_diagonal_gradient(size)
+    plate = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    plate.paste(gradient, (0, 0), sq_mask)
+    canvas = Image.alpha_composite(canvas, plate)
 
-    poly = shield_polygon(shield_cx, shield_cy, shield_w, shield_h)
+    # White glyph with punched waveform
+    g_mask = glyph_mask(size, box_origin, box_size)
+    glyph = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    glyph.paste(Image.new("RGBA", (size, size), GLYPH_COLOR), (0, 0), g_mask)
+    canvas = Image.alpha_composite(canvas, glyph)
 
-    # Shield mask for clipping
-    shield_mask = Image.new("L", (RS, RS), 0)
-    sm_draw = ImageDraw.Draw(shield_mask)
-    sm_draw.polygon(poly, fill=255)
-
-    # Shield fill with gradient
-    shield_grad = make_gradient_fast(RS, SHIELD_FILL_TOP, SHIELD_FILL_BOT)
-    icon.paste(shield_grad, mask=shield_mask)
-
-    # Shield border: draw a crisp white border
-    print("  Drawing shield border...")
-    border_layer = Image.new("RGBA", (RS, RS), (0, 0, 0, 0))
-    bd = ImageDraw.Draw(border_layer)
-
-    # Multiple passes for a soft glow + crisp edge
-    for expand, alpha, width in [(12, 10, 4), (8, 18, 3), (4, 35, 2), (0, 100, 3)]:
-        if expand > 0:
-            expanded_poly = shield_polygon(shield_cx, shield_cy, shield_w + expand, shield_h + expand)
-        else:
-            expanded_poly = poly
-        el = Image.new("RGBA", (RS, RS), (0, 0, 0, 0))
-        ed = ImageDraw.Draw(el)
-        ed.polygon(expanded_poly, outline=(200, 230, 255, alpha), width=width)
-        if expand > 0:
-            el = el.filter(ImageFilter.GaussianBlur(radius=expand // 2))
-        border_layer.alpha_composite(el)
-
-    icon.alpha_composite(border_layer)
-
-    # Shield inner highlight (glossy top)
-    print("  Adding shield highlight...")
-    hl_layer = Image.new("RGBA", (RS, RS), (0, 0, 0, 0))
-    hd = ImageDraw.Draw(hl_layer)
-    hl_w = shield_w * 0.7
-    hl_h = shield_h * 0.22
-    hl_cy = shield_cy - shield_h * 0.30
-    hd.ellipse(
-        [shield_cx - hl_w / 2, hl_cy - hl_h / 2, shield_cx + hl_w / 2, hl_cy + hl_h / 2],
-        fill=(255, 255, 255, 25),
-    )
-    hl_layer = hl_layer.filter(ImageFilter.GaussianBlur(radius=RS * 0.04))
-    # Clip to shield
-    hl_layer.putalpha(
-        Image.composite(hl_layer.getchannel("A"), Image.new("L", (RS, RS), 0), shield_mask)
-    )
-    icon.alpha_composite(hl_layer)
-
-    # 4. Microphone
-    print("  Drawing microphone...")
-    mic_scale = RS / 512  # scale factor
-    mic_cy = shield_cy + RS * 0.02
-    draw_mic_complete(icon, shield_cx, mic_cy, mic_scale, MIC_COLOR)
-
-    # 5. Sound wave arcs (clipped to shield)
-    print("  Drawing sound waves...")
-    draw_sound_waves(icon, shield_cx, mic_cy, mic_scale, shield_mask)
-
-    # 6. Outer glow around shield
-    print("  Adding outer glow...")
-    glow = Image.new("RGBA", (RS, RS), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glow)
-    glow_poly = shield_polygon(shield_cx, shield_cy, shield_w + 40, shield_h + 40)
-    gd.polygon(glow_poly, fill=(80, 200, 255, 18))
-    glow = glow.filter(ImageFilter.GaussianBlur(radius=25))
-    # Exclude interior
-    outer_mask = Image.new("L", (RS, RS), 255)
-    om_draw = ImageDraw.Draw(outer_mask)
-    om_draw.polygon(poly, fill=0)
-    glow.putalpha(
-        Image.composite(glow.getchannel("A"), Image.new("L", (RS, RS), 0), outer_mask)
-    )
-    icon.alpha_composite(glow)
-
-    # 7. Downscale for anti-aliasing
-    print("  Downscaling for anti-aliasing...")
-    icon = icon.resize((SIZE, SIZE), Image.LANCZOS)
-
-    return icon
+    return canvas.resize((SIZE, SIZE), Image.LANCZOS)
 
 
 # ---------------------------------------------------------------------------
