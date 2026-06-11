@@ -145,7 +145,22 @@ def _friendly_error(exc: Exception) -> str:
 
 # Icon path for menubar
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_ICON_PATH = os.path.join(_PROJECT_ROOT, "assets", "SafeVoice.icns")
+
+
+def _find_icon():
+    """Resolve the menubar icon in dev AND inside a py2app bundle.
+
+    py2app puts the iconfile in Contents/Resources and exports RESOURCEPATH;
+    the dev-checkout assets/ path does not exist in a standalone bundle, and
+    falling through used to silently degrade the menubar to the text "SV".
+    """
+    res_dir = os.environ.get("RESOURCEPATH")
+    if res_dir:
+        bundled = os.path.join(res_dir, "SafeVoice.icns")
+        if os.path.exists(bundled):
+            return bundled
+    dev_path = os.path.join(_PROJECT_ROOT, "assets", "SafeVoice.icns")
+    return dev_path if os.path.exists(dev_path) else None
 
 
 class SafeVoiceApp(rumps.App):
@@ -153,7 +168,7 @@ class SafeVoiceApp(rumps.App):
 
     def __init__(self):
         # Use .icns icon for menubar; fall back to text if missing
-        icon_path = _ICON_PATH if os.path.exists(_ICON_PATH) else None
+        icon_path = _find_icon()
         super().__init__(
             name="SafeVoice",
             title="SV" if icon_path is None else None,
@@ -252,10 +267,15 @@ class SafeVoiceApp(rumps.App):
         # Build menu
         self._build_menu()
 
-        # Start hotkey listener
+        # Start hotkey listener. On first run the Accessibility system
+        # dialog used to fire HERE, 1.5 s before the wizard could explain
+        # why; the wizard's Permissions step now owns the prompt (and the
+        # permission poll recreates the tap once granted either way).
+        is_first_run = bool(self._settings.get("first_run", True))
         self._hotkey.start(
             on_activate=self._on_hotkey_activate,
             on_deactivate=self._on_hotkey_deactivate,
+            prompt_if_untrusted=not is_first_run,
         )
 
         # Preload model in background. On a true first run with no model on
@@ -558,6 +578,11 @@ class SafeVoiceApp(rumps.App):
                 # make sure it happens once the wizard is done (no-op if the
                 # wizard's own download already let a load succeed).
                 self._start_model_load()
+                # Fallback: if the user clicked through the Permissions step
+                # without granting, fire the Accessibility prompt now so the
+                # hotkey can ever start working.
+                if not TextInjector.check_accessibility_permission():
+                    self._hotkey.request_accessibility_permission()
             self._wizard = SetupWizard(self, on_complete=on_complete)
             self._wizard.show()
 

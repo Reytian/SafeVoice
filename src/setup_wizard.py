@@ -212,7 +212,7 @@ class SetupWizard:
         self._label("Accessibility Access", 14, bold=True, y=200, x=60)
         self._label("Required to type text into other apps", 12, y=180, x=60)
         self._acc_status = self._label("", 12, y=200, x=370, width=80)
-        self._button("Open", y=196, x=420, width=60, action=self._open_acc_prefs, secondary=True)
+        self._button("Open", y=196, x=420, width=60, action=self._acc_button_action, secondary=True)
 
         self._update_permission_display()
         self._start_permission_polling()
@@ -298,6 +298,19 @@ class SetupWizard:
         subprocess.Popen([
             "open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
         ])
+
+    def _acc_button_action(self):
+        """Fire the Accessibility prompt, then open the Settings pane.
+
+        Startup defers the system dialog to this step on first run so it
+        appears WITH the wizard's explanation; requesting also registers
+        the app in the Accessibility pane the button opens.
+        """
+        try:
+            self._app._hotkey.request_accessibility_permission()
+        except Exception:
+            logger.warning("Could not request Accessibility permission", exc_info=True)
+        self._open_acc_prefs()
 
     def _open_acc_prefs(self):
         subprocess.Popen([

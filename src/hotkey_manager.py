@@ -137,8 +137,16 @@ class HotkeyManager:
         self,
         on_activate: Callable[[], None],
         on_deactivate: Callable[[], None],
+        prompt_if_untrusted: bool = True,
     ) -> None:
-        """Start listening for global hotkeys."""
+        """Start listening for global hotkeys.
+
+        With ``prompt_if_untrusted=False`` the macOS Accessibility dialog is
+        NOT triggered automatically; the tap is still created and the
+        permission poll still recovers once trust is granted. Used on first
+        run so the setup wizard can explain the permission BEFORE the system
+        dialog appears, instead of the dialog racing ahead of the wizard.
+        """
         with self._lock:
             if self._cg_tap is not None:
                 logger.warning("HotkeyManager is already running; ignoring start()")
@@ -148,7 +156,7 @@ class HotkeyManager:
             self._is_active = False
             self._activate_trigger_held = False
 
-        self._start_cg_tap()
+        self._start_cg_tap(prompt_if_untrusted=prompt_if_untrusted)
 
         logger.info(
             "HotkeyManager started (mode=%s). Activate: %s",
@@ -218,10 +226,11 @@ class HotkeyManager:
     # CGEventTap (activation hotkey)
     # ------------------------------------------------------------------
 
-    def _request_accessibility_permission(self) -> bool:
+    def request_accessibility_permission(self) -> bool:
         """Check Accessibility trust and trigger the system dialog if needed.
 
-        Returns True if already trusted, False otherwise.
+        Public: the setup wizard calls this from its Permissions step so the
+        dialog appears with context. Returns True if already trusted.
         """
         trusted = AXIsProcessTrusted()
         if trusted:
@@ -287,14 +296,23 @@ class HotkeyManager:
         self._cg_thread.start()
         return True
 
-    def _start_cg_tap(self):
+    def _start_cg_tap(self, prompt_if_untrusted: bool = True):
         """Create a CGEventTap to monitor key and modifier events.
 
         If the process lacks Accessibility permission, a system dialog is
-        shown and a background thread polls every 2 seconds until permission
-        is granted, then (re)creates the tap automatically.
+        shown (unless prompt_if_untrusted=False) and a background thread
+        polls every 2 seconds until permission is granted, then (re)creates
+        the tap automatically.
         """
-        was_trusted = self._request_accessibility_permission()
+        if prompt_if_untrusted:
+            was_trusted = self.request_accessibility_permission()
+        else:
+            was_trusted = AXIsProcessTrusted()
+            if not was_trusted:
+                logger.info(
+                    "Not trusted for Accessibility; deferring the system "
+                    "dialog to the setup wizard (poll active)"
+                )
 
         if was_trusted:
             if not self._create_cg_tap():
