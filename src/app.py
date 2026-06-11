@@ -403,23 +403,13 @@ class SafeVoiceApp(rumps.App):
 
     def _show_setup_wizard(self):
         """Show setup wizard, dispatched to main thread for AppKit safety."""
-        from AppKit import NSObject as _NSObj
-        import objc as _objc
+        def launch():
+            def on_complete():
+                self._settings.set("first_run", False)
+            self._wizard = SetupWizard(self, on_complete=on_complete)
+            self._wizard.show()
 
-        app_ref = self
-
-        class _WizardLauncher(_NSObj):
-            def launchWizard_(self_, sender):
-                def on_complete():
-                    app_ref._settings.set("first_run", False)
-                app_ref._wizard = SetupWizard(app_ref, on_complete=on_complete)
-                app_ref._wizard.show()
-
-        launcher = _WizardLauncher.alloc().init()
-        self._wizard_launcher = launcher  # prevent GC
-        launcher.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "launchWizard:", None, False
-        )
+        _run_on_main(launch)
 
     def _apply_saved_settings(self):
         """Apply persisted settings to components on startup."""

@@ -6,7 +6,9 @@ Zhipu, Moonshot, Dashscope, DeepSeek) backends behind a unified interface.
 
 import json
 import logging
+import os
 import re
+import shutil
 import urllib.request
 import urllib.error
 from typing import Optional, Tuple
@@ -14,6 +16,23 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE = "http://localhost:11434"
+
+
+def find_ollama() -> str:
+    """Return an absolute path to the ollama CLI, or "ollama" as last resort.
+
+    Finder-launched apps inherit PATH=/usr/bin:/bin:/usr/sbin:/sbin, which
+    contains neither /opt/homebrew/bin nor /usr/local/bin, so subprocess
+    calls with a bare "ollama" raise FileNotFoundError even when Ollama is
+    installed. Resolve the binary explicitly so pull/rm work from the bundle.
+    """
+    found = shutil.which("ollama")
+    if found:
+        return found
+    for candidate in ("/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"):
+        if os.path.exists(candidate):
+            return candidate
+    return "ollama"
 DEFAULT_LOCAL_MODEL = "qwen2.5:3b"
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3.5-4B-4bit"
 

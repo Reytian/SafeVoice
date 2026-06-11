@@ -55,6 +55,7 @@ from .llm_backend import (
     CLOUD_DEFAULTS,
     ASR_MODELS,
     CLOUD_LLM_MODELS,
+    find_ollama,
     is_asr_model_downloaded,
     is_reasoning_model,
 )
@@ -124,6 +125,22 @@ class _SettingsCallbackTarget(NSObject):
     def invoke(self):
         if self._callback is not None:
             self._callback()
+
+
+def _post_to_main(block) -> None:
+    """Run *block* (zero-arg callable) on the main thread, from any thread.
+
+    Always use this from worker threads instead of defining an NSObject
+    subclass inside the closure: PyObjC registers ObjC classes by NAME in the
+    global runtime, so the second execution of such a closure raises
+    objc.error ("overriding existing Objective-C class"), killing the worker
+    and silently dropping the UI update.
+    """
+    trampoline = _SettingsTrampoline.alloc().initWithBlock_(block)
+    _SettingsTrampoline._prevent_gc.add(trampoline)
+    trampoline.performSelectorOnMainThread_withObject_waitUntilDone_(
+        "invoke", None, False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1359,15 +1376,11 @@ class SettingsWindow:
                     cache_dir = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{safe_id}"
                     if cache_dir.exists():
                         shutil.rmtree(str(cache_dir))
-                    from AppKit import NSObject as _NSO
-                    class _R(_NSO):
-                        def done_(self_, sender):
-                            self._asr_del_status.setStringValue_(f"\u2713 {model['name']} deleted")
-                    r = _R.alloc().init()
-                    self._hotkey_delegates.append(r)
-                    r.performSelectorOnMainThread_withObject_waitUntilDone_("done:", None, False)
+                    _post_to_main(lambda: self._asr_del_status.setStringValue_(
+                        f"\u2713 {model['name']} deleted"))
                 except Exception as e:
-                    self._asr_del_status.setStringValue_(f"\u2717 {e}")
+                    err_text = f"\u2717 {e}"
+                    _post_to_main(lambda: self._asr_del_status.setStringValue_(err_text))
             threading.Thread(target=_do_delete, daemon=True).start()
 
         asr_del_target = _SettingsCallbackTarget.alloc().initWithCallback_(_delete_asr)
@@ -1512,30 +1525,27 @@ class SettingsWindow:
             def _do_delete():
                 try:
                     result = subprocess.run(
-                        ["ollama", "rm", model_name],
+                        [find_ollama(), "rm", model_name],
                         capture_output=True, text=True, timeout=30,
                     )
-                    class _Refresher(NSObject):
-                        def refresh_(self_, sender):
-                            if hasattr(self, '_ollama_spinner') and self._ollama_spinner:
-                                self._ollama_spinner.stopAnimation_(None)
-                            if result.returncode == 0:
-                                self._ollama_dl_status.setStringValue_(f"\u2713 Deleted {model_name}")
-                            else:
-                                self._ollama_dl_status.setStringValue_(f"\u2717 Error: {result.stderr[:40]}")
-                            self._refresh_local_models()
-                    r = _Refresher.alloc().init()
-                    self._hotkey_delegates.append(r)
-                    r.performSelectorOnMainThread_withObject_waitUntilDone_("refresh:", None, False)
+
+                    def _apply_result():
+                        if hasattr(self, '_ollama_spinner') and self._ollama_spinner:
+                            self._ollama_spinner.stopAnimation_(None)
+                        if result.returncode == 0:
+                            self._ollama_dl_status.setStringValue_(f"\u2713 Deleted {model_name}")
+                        else:
+                            self._ollama_dl_status.setStringValue_(f"\u2717 Error: {result.stderr[:40]}")
+                        self._refresh_local_models()
+                    _post_to_main(_apply_result)
                 except Exception as e:
-                    class _ErrUpdater(NSObject):
-                        def update_(self_, sender):
-                            if hasattr(self, '_ollama_spinner') and self._ollama_spinner:
-                                self._ollama_spinner.stopAnimation_(None)
-                            self._ollama_dl_status.setStringValue_(f"\u2717 Error: {e}")
-                    u = _ErrUpdater.alloc().init()
-                    self._hotkey_delegates.append(u)
-                    u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+                    err_text = f"\u2717 Error: {e}"
+
+                    def _apply_err():
+                        if hasattr(self, '_ollama_spinner') and self._ollama_spinner:
+                            self._ollama_spinner.stopAnimation_(None)
+                        self._ollama_dl_status.setStringValue_(err_text)
+                    _post_to_main(_apply_err)
             threading.Thread(target=_do_delete, daemon=True).start()
 
         del_target = _SettingsCallbackTarget.alloc().initWithCallback_(_delete_model)
@@ -1602,35 +1612,29 @@ class SettingsWindow:
             def _do_pull():
                 try:
                     result = subprocess.run(
-                        ["ollama", "pull", model_name],
+                        [find_ollama(), "pull", model_name],
                         capture_output=True, text=True, timeout=600,
                     )
                     if result.returncode == 0:
-                        class _Refresher(NSObject):
-                            def refresh_(self_, sender):
-                                self._ollama_spinner.stopAnimation_(None)
-                                self._ollama_dl_status.setStringValue_(f"\u2713 {model_name} downloaded!")
-                                self._refresh_local_models()
-                        r = _Refresher.alloc().init()
-                        self._hotkey_delegates.append(r)
-                        r.performSelectorOnMainThread_withObject_waitUntilDone_("refresh:", None, False)
+                        def _apply_ok():
+                            self._ollama_spinner.stopAnimation_(None)
+                            self._ollama_dl_status.setStringValue_(f"\u2713 {model_name} downloaded!")
+                            self._refresh_local_models()
+                        _post_to_main(_apply_ok)
                     else:
                         err_msg = result.stderr[:60] if result.stderr else "unknown error"
-                        class _ErrUpdater(NSObject):
-                            def update_(self_, sender):
-                                self._ollama_spinner.stopAnimation_(None)
-                                self._ollama_dl_status.setStringValue_(f"\u2717 Error: {err_msg}")
-                        u = _ErrUpdater.alloc().init()
-                        self._hotkey_delegates.append(u)
-                        u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
-                except Exception as e:
-                    class _ExcUpdater(NSObject):
-                        def update_(self_, sender):
+
+                        def _apply_fail():
                             self._ollama_spinner.stopAnimation_(None)
-                            self._ollama_dl_status.setStringValue_(f"\u2717 Error: {e}")
-                    u = _ExcUpdater.alloc().init()
-                    self._hotkey_delegates.append(u)
-                    u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+                            self._ollama_dl_status.setStringValue_(f"\u2717 Error: {err_msg}")
+                        _post_to_main(_apply_fail)
+                except Exception as e:
+                    err_text = f"\u2717 Error: {e}"
+
+                    def _apply_exc():
+                        self._ollama_spinner.stopAnimation_(None)
+                        self._ollama_dl_status.setStringValue_(err_text)
+                    _post_to_main(_apply_exc)
             threading.Thread(target=_do_pull, daemon=True).start()
 
         dl_target = _SettingsCallbackTarget.alloc().initWithCallback_(_pull_model)
@@ -1698,20 +1702,14 @@ class SettingsWindow:
                     cache_dir = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{safe_id}"
                     if cache_dir.exists():
                         shutil.rmtree(cache_dir)
-                    class _Refresher(NSObject):
-                        def refresh_(self_, sender):
-                            self._mlx_status.setStringValue_(f"\u2713 Deleted")
-                            self._refresh_mlx_models()
-                    r = _Refresher.alloc().init()
-                    self._hotkey_delegates.append(r)
-                    r.performSelectorOnMainThread_withObject_waitUntilDone_("refresh:", None, False)
+
+                    def _apply_ok():
+                        self._mlx_status.setStringValue_("\u2713 Deleted")
+                        self._refresh_mlx_models()
+                    _post_to_main(_apply_ok)
                 except Exception as e:
-                    class _Err(NSObject):
-                        def update_(self_, sender):
-                            self._mlx_status.setStringValue_(f"\u2717 Error: {e}")
-                    u = _Err.alloc().init()
-                    self._hotkey_delegates.append(u)
-                    u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+                    err_text = f"\u2717 Error: {e}"
+                    _post_to_main(lambda: self._mlx_status.setStringValue_(err_text))
             threading.Thread(target=_do_delete, daemon=True).start()
 
         mlx_del_target = _SettingsCallbackTarget.alloc().initWithCallback_(_delete_mlx_model)
@@ -1760,20 +1758,14 @@ class SettingsWindow:
                 try:
                     from huggingface_hub import snapshot_download
                     snapshot_download(model_id)
-                    class _Done(NSObject):
-                        def done_(self_, sender):
-                            self._mlx_status.setStringValue_(f"\u2713 {short} downloaded!")
-                            self._refresh_mlx_models()
-                    d = _Done.alloc().init()
-                    self._hotkey_delegates.append(d)
-                    d.performSelectorOnMainThread_withObject_waitUntilDone_("done:", None, False)
+
+                    def _apply_ok():
+                        self._mlx_status.setStringValue_(f"\u2713 {short} downloaded!")
+                        self._refresh_mlx_models()
+                    _post_to_main(_apply_ok)
                 except Exception as e:
-                    class _Err(NSObject):
-                        def update_(self_, sender):
-                            self._mlx_status.setStringValue_(f"\u2717 Error: {str(e)[:50]}")
-                    u = _Err.alloc().init()
-                    self._hotkey_delegates.append(u)
-                    u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+                    err_text = f"\u2717 Error: {str(e)[:50]}"
+                    _post_to_main(lambda: self._mlx_status.setStringValue_(err_text))
             threading.Thread(target=_do_download, daemon=True).start()
 
         mlx_dl_target = _SettingsCallbackTarget.alloc().initWithCallback_(_download_mlx_model)

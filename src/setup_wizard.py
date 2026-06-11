@@ -33,6 +33,41 @@ class _WizardButtonTarget(NSObject):
             self._callback()
 
 
+class _WizardTrampoline(NSObject):
+    """Invoke a Python callable on the main thread (shared, module-level).
+
+    Defined ONCE at module scope on purpose: PyObjC registers ObjC classes
+    by name globally, so defining an NSObject subclass inside a closure
+    raises objc.error the second time the closure runs (which is how the
+    wizard's status updates used to die after the first download finished).
+    """
+
+    _prevent_gc: set = set()
+
+    def initWithBlock_(self, block):
+        self = objc.super(_WizardTrampoline, self).init()
+        if self is None:
+            return None
+        self._block = block
+        return self
+
+    def invoke(self):
+        try:
+            if self._block is not None:
+                self._block()
+        finally:
+            _WizardTrampoline._prevent_gc.discard(self)
+
+
+def _post_to_main(block) -> None:
+    """Run *block* (zero-arg callable) on the main thread, from any thread."""
+    trampoline = _WizardTrampoline.alloc().initWithBlock_(block)
+    _WizardTrampoline._prevent_gc.add(trampoline)
+    trampoline.performSelectorOnMainThread_withObject_waitUntilDone_(
+        "invoke", None, False
+    )
+
+
 class SetupWizard:
     """8-step onboarding wizard for first-time users."""
 
@@ -277,15 +312,12 @@ class SetupWizard:
             if selected in STYLE_PRESETS:
                 self._tone_text_view.setString_(STYLE_PRESETS[selected])
 
-        from AppKit import NSObject as _NSO
-        import objc as _objc
-        class _PresetTarget(_NSO):
-            def invoke_(self_, sender):
-                on_preset_change()
-        preset_target = _PresetTarget.alloc().init()
+        # Reuse the module-level target class: re-rendering this step (Back
+        # then Next) must not re-define an ObjC class, which raises objc.error.
+        preset_target = _WizardButtonTarget.alloc().initWithCallback_(on_preset_change)
         self._targets.add(preset_target)
         self._tone_popup.setTarget_(preset_target)
-        self._tone_popup.setAction_(_objc.selector(preset_target.invoke_, signature=b"v@:@"))
+        self._tone_popup.setAction_(objc.selector(preset_target.invoke_, signature=b"v@:@"))
 
         # Test area
         self._label("Test it:", 12, y=108, x=30, bold=True)
@@ -325,17 +357,12 @@ class SetupWizard:
         def _run():
             result = self._app._llm.cleanup(sample_text, custom_prompt=custom_prompt)
 
-            from AppKit import NSObject as _NSO
-            import objc as _objc
-            class _ResultUpdater(_NSO):
-                def update_(self_, sender):
-                    self._tone_result.setStringValue_(f"Result: {result}")
-                    self._tone_result.setTextColor_(
-                        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.5, 0.8, 1.0)
-                    )
-            u = _ResultUpdater.alloc().init()
-            self._targets.add(u)
-            u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+            def _apply():
+                self._tone_result.setStringValue_(f"Result: {result}")
+                self._tone_result.setTextColor_(
+                    NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.5, 0.8, 1.0)
+                )
+            _post_to_main(_apply)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -455,9 +482,10 @@ class SetupWizard:
 
         def _do_pull():
             try:
+                from .llm_backend import find_ollama
                 model = self._app._settings.get("llm_local_model", "qwen2.5:3b")
                 result = subprocess.run(
-                    ["ollama", "pull", model],
+                    [find_ollama(), "pull", model],
                     capture_output=True, text=True, timeout=600,
                 )
                 if result.returncode == 0:
@@ -483,31 +511,23 @@ class SetupWizard:
         """Update an NSTextField from any thread, on the main thread.
 
         AppKit views must only be mutated on the main thread, so this always
-        hops via performSelectorOnMainThread. It also skips the update if the
+        hops via the shared trampoline. It also skips the update if the
         wizard has navigated away from *only_on_step* or the label has been
         removed from the view hierarchy, so a late download callback can't
         write to a stale/dead label.
         """
-        updater_self = self
+        def _apply():
+            if only_on_step is not None and self._current_step != only_on_step:
+                return
+            if self._window is None or not self._window.isVisible():
+                return
+            if label is None or label.superview() is None:
+                return
+            label.setStringValue_(text)
+            if color is not None:
+                label.setTextColor_(color)
 
-        class _Updater(NSObject):
-            def update_(self_, sender):
-                try:
-                    if only_on_step is not None and updater_self._current_step != only_on_step:
-                        return
-                    if updater_self._window is None or not updater_self._window.isVisible():
-                        return
-                    if label is None or label.superview() is None:
-                        return
-                    label.setStringValue_(text)
-                    if color is not None:
-                        label.setTextColor_(color)
-                finally:
-                    updater_self._targets.discard(self_)
-
-        u = _Updater.alloc().init()
-        self._targets.add(u)
-        u.performSelectorOnMainThread_withObject_waitUntilDone_("update:", None, False)
+        _post_to_main(_apply)
 
     def _label(self, text, size, bold=False, y=0, x=None, center=False, width=300, height=24):
         if x is None:
