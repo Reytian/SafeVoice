@@ -18,6 +18,34 @@ logger = logging.getLogger(__name__)
 STEPS = ["Welcome", "Demo", "Permissions", "Model", "Tone", "Settings", "Test", "Ready"]
 
 
+def _mic_permission_status() -> str:
+    """Real microphone TCC state: granted | denied | undetermined | unknown.
+
+    sounddevice.query_devices() only enumerates hardware, which needs no
+    permission, so the old check showed "Granted" before macOS had ever
+    asked; the real prompt then interrupted the user's FIRST dictation.
+    AVCaptureDevice reports the actual TCC authorization. The framework is
+    loaded via the runtime bridge because pyobjc-framework-AVFoundation is
+    not a dependency.
+    """
+    try:
+        import objc as _objc
+        _objc.loadBundle(
+            "AVFoundation", {},
+            bundle_path="/System/Library/Frameworks/AVFoundation.framework",
+        )
+        av_capture_device = _objc.lookUpClass("AVCaptureDevice")
+        # "soun" == AVMediaTypeAudio; statuses: 0 notDetermined, 1 restricted,
+        # 2 denied, 3 authorized.
+        status = av_capture_device.authorizationStatusForMediaType_("soun")
+        return {0: "undetermined", 1: "denied", 2: "denied", 3: "granted"}.get(
+            status, "unknown"
+        )
+    except Exception:
+        logger.warning("Could not query mic permission", exc_info=True)
+        return "unknown"
+
+
 class _WizardButtonTarget(NSObject):
     """NSObject target for wizard button actions. Prevents GC."""
 
@@ -152,7 +180,11 @@ class SetupWizard:
         self._label("Microphone Access", 14, bold=True, y=270, x=60)
         self._label("Required to hear your voice", 12, y=250, x=60)
         self._mic_status = self._label("", 12, y=270, x=370, width=80)
-        self._button("Open", y=266, x=420, width=60, action=self._open_mic_prefs, secondary=True)
+        mic_btn_title = (
+            "Allow" if _mic_permission_status() == "undetermined" else "Open"
+        )
+        self._button(mic_btn_title, y=266, x=420, width=60,
+                     action=self._mic_button_action, secondary=True)
 
         self._label("Accessibility Access", 14, bold=True, y=200, x=60)
         self._label("Required to type text into other apps", 12, y=180, x=60)
@@ -166,16 +198,25 @@ class SetupWizard:
         self._button("Next", y=80, x=280, action=self._next_step)
 
     def _update_permission_display(self):
-        try:
-            import sounddevice
-            sounddevice.query_devices(kind="input")
+        status = _mic_permission_status()
+        if status == "granted":
             self._mic_status.setStringValue_("\u2713 Granted")
             self._mic_status.setTextColor_(
                 NSColor.colorWithCalibratedRed_green_blue_alpha_(0.2, 0.7, 0.2, 1.0)
             )
-        except Exception:
-            self._mic_status.setStringValue_("\u2717 Needed")
+        elif status == "undetermined":
+            self._mic_status.setStringValue_("Not requested")
+            self._mic_status.setTextColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
+            )
+        elif status == "denied":
+            self._mic_status.setStringValue_("\u2717 Denied")
             self._mic_status.setTextColor_(NSColor.redColor())
+        else:
+            self._mic_status.setStringValue_("Unknown")
+            self._mic_status.setTextColor_(
+                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.6, 0.6, 0.6, 1.0)
+            )
 
         from ApplicationServices import AXIsProcessTrusted
         if AXIsProcessTrusted():
@@ -202,6 +243,33 @@ class SetupWizard:
         self._perm_timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
             2.0, True, check,
         )
+
+    def _mic_button_action(self):
+        """Request mic access if macOS has never asked; otherwise open the pane.
+
+        Before the first capture attempt this app is not even LISTED in the
+        Microphone pane, so sending the user to System Settings is a dead
+        end. Opening a brief input stream makes macOS show the permission
+        dialog and registers the app in the pane; the 2 s poll then updates
+        the status row.
+        """
+        if _mic_permission_status() == "undetermined":
+            def _trigger():
+                try:
+                    import time
+                    import sounddevice as sd
+                    stream = sd.InputStream(samplerate=16000, channels=1)
+                    stream.start()
+                    time.sleep(0.15)
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    # Expected when the user clicks "Don't Allow"; the poll
+                    # will show Denied.
+                    logger.info("Mic permission trigger stream failed", exc_info=True)
+            threading.Thread(target=_trigger, daemon=True).start()
+        else:
+            self._open_mic_prefs()
 
     def _open_mic_prefs(self):
         subprocess.Popen([
