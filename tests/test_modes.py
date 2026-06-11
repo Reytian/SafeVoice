@@ -72,3 +72,63 @@ def test_mode_hotkey(manager):
     ))
     mode = manager.get("Translate")
     assert mode.hotkey == {"key": "t", "modifiers": ["alt"]}
+
+
+# --- Robustness: a damaged modes.json must never break startup -----------
+
+def test_corrupt_json_falls_back_to_defaults(tmp_path):
+    path = tmp_path / "modes.json"
+    path.write_text("{ this is not json", encoding="utf-8")
+    m = ModeManager(str(path))
+    assert m.get("Quick") is not None
+
+
+def test_non_dict_root_falls_back_to_defaults(tmp_path):
+    path = tmp_path / "modes.json"
+    path.write_text('["array", "root"]', encoding="utf-8")
+    m = ModeManager(str(path))
+    assert m.get("Quick") is not None
+
+
+def test_malformed_entries_are_skipped(tmp_path):
+    path = tmp_path / "modes.json"
+    path.write_text(
+        '{"custom_modes": ['
+        '  {"name": "Good", "prompt_template": "Do: {text}"},'
+        '  {"unexpected_field": 1, "name": "Bad"},'
+        '  "not-a-dict",'
+        '  {"prompt_template": "no name"}'
+        '], "hotkey_overrides": "not-a-list"}',
+        encoding="utf-8",
+    )
+    m = ModeManager(str(path))
+    assert m.get("Good") is not None
+    assert m.get("Bad") is not None  # unknown keys dropped, entry kept
+    assert m.get("Quick") is not None
+
+
+def test_unknown_fields_in_saved_mode_survive_load(tmp_path):
+    # Simulates downgrade: a future version wrote extra dataclass fields.
+    path = tmp_path / "modes.json"
+    path.write_text(
+        '{"custom_modes": [{"name": "Future", "prompt_template": "x {text}",'
+        ' "added_in_v9": true}]}',
+        encoding="utf-8",
+    )
+    m = ModeManager(str(path))
+    assert m.get("Future") is not None
+
+
+def test_update_prompt_builtin_and_persist(tmp_path):
+    path = str(tmp_path / "modes.json")
+    m1 = ModeManager(path)
+    assert m1.update_prompt("Quick", "Clean: {text}") is True
+    assert m1.get("Quick").prompt_template == "Clean: {text}"
+    assert m1.get("Quick").builtin is True
+    m2 = ModeManager(path)
+    assert m2.get("Quick").builtin is True
+    assert m2.get("Quick").prompt_template == "Clean: {text}"
+
+
+def test_update_prompt_missing_mode(manager):
+    assert manager.update_prompt("Nope", "x") is False

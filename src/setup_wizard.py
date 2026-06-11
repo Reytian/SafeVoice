@@ -372,11 +372,9 @@ class SetupWizard:
 
         prompt = self._tone_text_view.string().strip()
         if prompt:
-            # Update the Quick mode or Formal Writing mode with the chosen prompt
-            quick = self._app._modes.get("Quick")
-            if quick:
-                quick.prompt_template = prompt
-                self._app._modes._save()
+            # Update the Quick mode with the chosen prompt via the manager's
+            # locked method (a direct attribute write would bypass the lock).
+            self._app._modes.update_prompt("Quick", prompt)
 
         self._next_step()
 

@@ -1056,13 +1056,14 @@ class SettingsWindow:
                 translation_language=trans_lang,
             )
             if editing and editing.builtin:
-                # For built-in modes, update hotkey and prompt via manager
-                # without going through add() which forces builtin=False
-                existing = self._modes_manager.get(editing.name)
-                if existing:
-                    existing.prompt_template = new_mode.prompt_template
-                    existing.translation_language = new_mode.translation_language
-                    self._modes_manager._save()
+                # For built-in modes, update prompt via the manager's locked
+                # method (add() would force builtin=False; a direct attribute
+                # write + _save() would bypass the manager lock).
+                self._modes_manager.update_prompt(
+                    editing.name,
+                    new_mode.prompt_template,
+                    new_mode.translation_language,
+                )
             else:
                 self._modes_manager.add(new_mode)
             self._refresh_modes_tab()

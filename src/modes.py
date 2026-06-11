@@ -1,8 +1,11 @@
 """Processing modes: Quick (direct ASR) and custom LLM modes with per-mode hotkeys."""
 import json
+import logging
 import os
 import threading
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
+
+logger = logging.getLogger(__name__)
 
 # IMPORTANT for every preset: the {text} block is dictated speech to be
 # transcribed, NOT an instruction the model should act on. If the text
@@ -103,25 +106,100 @@ class ModeManager:
         self._load()
 
     def _load(self):
+        """Load modes from disk, falling back to defaults on any damage.
+
+        A truncated/corrupt/hand-edited modes.json must never prevent the
+        app from launching (same hardening as vocabulary.py): bad entries
+        are skipped with a logged warning and the defaults survive.
+        """
         self._modes = [Mode(**{**m.__dict__}) for m in DEFAULT_MODES]
-        if os.path.exists(self._path):
-            with open(self._path) as f:
+        if not os.path.exists(self._path):
+            return
+        try:
+            with open(self._path, encoding="utf-8") as f:
                 data = json.load(f)
-            for entry in data.get("custom_modes", []):
-                self._modes.append(Mode(**entry))
-            for override in data.get("hotkey_overrides", []):
-                mode = self.get(override["name"])
-                if mode:
-                    mode.hotkey = override["hotkey"]
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"modes.json root must be an object, got {type(data).__name__}"
+                )
+        except Exception:
+            logger.warning(
+                "Could not load %s; using default modes", self._path, exc_info=True
+            )
+            return
+
+        known_fields = {f.name for f in fields(Mode)}
+        custom_modes = data.get("custom_modes", [])
+        if isinstance(custom_modes, list):
+            for entry in custom_modes:
+                try:
+                    if not isinstance(entry, dict):
+                        continue
+                    clean = {k: v for k, v in entry.items() if k in known_fields}
+                    if not clean.get("name"):
+                        continue
+                    self._modes.append(Mode(**clean))
+                except Exception:
+                    logger.warning(
+                        "Skipping malformed custom mode entry: %r", entry,
+                        exc_info=True,
+                    )
+        # "hotkey_overrides" historically held only hotkeys; it now carries
+        # any persisted builtin-mode customization (prompt_template,
+        # translation_language). Old files with hotkey-only entries still
+        # parse: absent keys leave the default value untouched.
+        overrides = data.get("hotkey_overrides", [])
+        if isinstance(overrides, list):
+            for override in overrides:
+                try:
+                    mode = self.get(override["name"])
+                    if mode:
+                        if "hotkey" in override:
+                            mode.hotkey = override.get("hotkey")
+                        if "prompt_template" in override:
+                            mode.prompt_template = override.get("prompt_template")
+                        if "translation_language" in override:
+                            mode.translation_language = override.get(
+                                "translation_language"
+                            )
+                except Exception:
+                    logger.warning(
+                        "Skipping malformed hotkey override: %r", override,
+                        exc_info=True,
+                    )
 
     def _save(self):
         custom = [asdict(m) for m in self._modes if not m.builtin]
-        overrides = [
-            {"name": m.name, "hotkey": m.hotkey}
-            for m in self._modes if m.builtin and m.hotkey
-        ]
-        with open(self._path, "w") as f:
-            json.dump({"custom_modes": custom, "hotkey_overrides": overrides}, f, indent=2)
+        # Persist every builtin-mode customization, not just hotkeys: the
+        # old hotkey-only writer silently dropped edited prompts (the
+        # wizard's tone choice reverted on every relaunch).
+        overrides = []
+        for m in self._modes:
+            if not m.builtin:
+                continue
+            default = next((d for d in DEFAULT_MODES if d.name == m.name), None)
+            entry: dict = {"name": m.name}
+            if m.hotkey:
+                entry["hotkey"] = m.hotkey
+            if default is None or m.prompt_template != default.prompt_template:
+                entry["prompt_template"] = m.prompt_template
+            if default is None or m.translation_language != default.translation_language:
+                entry["translation_language"] = m.translation_language
+            if len(entry) > 1:
+                overrides.append(entry)
+        # Write-then-rename so an interrupted write can never truncate the
+        # file (a truncated modes.json used to crash startup; it now merely
+        # loses customizations, but it should not even do that).
+        tmp_path = self._path + ".tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"custom_modes": custom, "hotkey_overrides": overrides},
+                    f, indent=2, ensure_ascii=False,
+                )
+            os.replace(tmp_path, self._path)
+        except OSError:
+            logger.warning("Failed to save modes to %s", self._path, exc_info=True)
 
     def get_all(self) -> list[Mode]:
         return list(self._modes)
@@ -158,3 +236,20 @@ class ModeManager:
             if mode:
                 mode.hotkey = hotkey
                 self._save()
+
+    def update_prompt(self, name: str, prompt_template: str | None,
+                      translation_language: str | None = None) -> bool:
+        """Update a mode's prompt in place (works for builtin modes) and persist.
+
+        Callers must use this instead of mutating Mode attributes directly:
+        it keeps the mutation and the file write under the manager lock so a
+        concurrent add/remove cannot interleave a stale _save().
+        """
+        with self._lock:
+            mode = self.get(name)
+            if mode is None:
+                return False
+            mode.prompt_template = prompt_template
+            mode.translation_language = translation_language
+            self._save()
+            return True
