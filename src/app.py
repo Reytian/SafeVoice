@@ -749,7 +749,10 @@ class SafeVoiceApp(rumps.App):
                             # back to the rule-stripped text on failure, so a
                             # legitimate result equal to the input must not be
                             # dropped by an == guard.
-                            text = self._llm.cleanup(text, custom_prompt=prompt)
+                            text = self._llm.cleanup(
+                                text, custom_prompt=prompt,
+                                allow_script_change=self._mode_allows_translation(),
+                            )
                         self._overlay.update_text(text)
                         logger.info("Mode result: %r", text)
                     elif self._active_mode.prompt_template is None and self._llm.is_available() and is_long_enough:
@@ -831,6 +834,21 @@ class SafeVoiceApp(rumps.App):
         t = threading.Thread(target=transcribe, daemon=True)
         t.start()
 
+    def _mode_allows_translation(self) -> bool:
+        """Whether the active mode is allowed to change the text's language.
+
+        Translation modes must bypass llm_cleanup's script-change guards;
+        every other mode must keep them so a misbehaving model can't replace
+        the user's Chinese with English under a "make it formal" prompt.
+        """
+        mode = self._active_mode
+        if mode is None:
+            return False
+        if mode.translation_language:
+            return True
+        template = (mode.prompt_template or "").lower()
+        return "translat" in template or "翻译" in template
+
     def _start_speculative_timer(self):
         """Periodically run ASR on captured audio and speculatively send to LLM."""
         self._speculative_timer_stop = threading.Event()
@@ -851,7 +869,10 @@ class SafeVoiceApp(rumps.App):
                     if text.strip():
                         text = self._vocabulary.apply_snippets(text)
                         prompt = self._active_mode.render_prompt(text.strip())
-                        self._llm.speculative_cleanup(text.strip(), custom_prompt=prompt)
+                        self._llm.speculative_cleanup(
+                            text.strip(), custom_prompt=prompt,
+                            allow_script_change=self._mode_allows_translation(),
+                        )
                 except Exception as e:
                     logger.debug("Speculative ASR failed: %s", e)
 

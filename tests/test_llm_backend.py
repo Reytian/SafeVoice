@@ -79,3 +79,93 @@ def test_cloud_backend_deepseek_url():
     url, headers, body = backend._build_request("Hello", "Fix this")
     assert "deepseek.com" in url
     assert headers["Authorization"] == "Bearer test-key"
+
+
+# --- Truncation detection (output cut at token cap must not be pasted) ----
+
+from src.llm_backend import LLMTruncatedError, LLMBackend
+
+
+def test_openai_truncation_raises():
+    backend = CloudBackend(provider="openai", model="gpt-4o-mini", api_key="k")
+    data = {"choices": [{"message": {"content": "cut off mid"},
+                         "finish_reason": "length"}]}
+    with pytest.raises(LLMTruncatedError):
+        backend._extract_text(data)
+
+
+def test_anthropic_truncation_raises():
+    backend = CloudBackend(provider="anthropic", model="m", api_key="k")
+    data = {"content": [{"text": "cut"}], "stop_reason": "max_tokens"}
+    with pytest.raises(LLMTruncatedError):
+        backend._extract_text(data)
+
+
+def test_google_truncation_raises():
+    backend = CloudBackend(provider="google", model="m", api_key="k")
+    data = {"candidates": [{"finishReason": "MAX_TOKENS",
+                            "content": {"parts": [{"text": "cut"}]}}]}
+    with pytest.raises(LLMTruncatedError):
+        backend._extract_text(data)
+
+
+def test_normal_completion_passes():
+    backend = CloudBackend(provider="openai", model="gpt-4o-mini", api_key="k")
+    data = {"choices": [{"message": {"content": "all good"},
+                         "finish_reason": "stop"}]}
+    assert backend._extract_text(data) == "all good"
+
+
+# --- LLMCleanup guard behavior with a fake backend ------------------------
+
+class _FakeBackend(LLMBackend):
+    def __init__(self, reply=None, exc=None):
+        self._reply = reply
+        self._exc = exc
+
+    @property
+    def name(self):
+        return "Fake"
+
+    def is_available(self):
+        return True
+
+    def chat(self, system_prompt, user_message):
+        if self._exc is not None:
+            raise self._exc
+        return self._reply
+
+
+def test_cleanup_truncation_falls_back_to_rule_strip():
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(exc=LLMTruncatedError("cap")))
+    raw = "um so we should meet on Tuesday to discuss the quarterly report"
+    out = llm.cleanup(raw)
+    assert "Tuesday" in out          # transcript preserved
+    assert not out.startswith("um")  # rule strip still applied
+
+
+def test_custom_path_rejects_unrequested_translation():
+    from src.llm_cleanup import LLMCleanup
+    # Formal-writing style mode, but the model translated the Chinese input.
+    llm = LLMCleanup(backend=_FakeBackend(reply="We use the GitHub API for this feature."))
+    raw = "我们用GitHub的API来做这个功能，明天上线"
+    out = llm.cleanup(raw, custom_prompt=f"Make this formal: {raw}")
+    assert "我们" in out  # rejected; original script preserved
+
+
+def test_custom_path_allows_translation_when_requested():
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply="We use the GitHub API for this feature tomorrow."))
+    raw = "我们用GitHub的API来做这个功能，明天上线"
+    out = llm.cleanup(raw, custom_prompt=f"Translate to English: {raw}",
+                      allow_script_change=True)
+    assert out.startswith("We use")
+
+
+def test_custom_path_truncation_falls_back():
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(exc=LLMTruncatedError("cap")))
+    raw = "please make this sentence sound a little more professional thanks"
+    out = llm.cleanup(raw, custom_prompt=f"Formal: {raw}")
+    assert "professional" in out

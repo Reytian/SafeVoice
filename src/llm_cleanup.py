@@ -9,7 +9,7 @@ import re
 import threading
 from typing import Optional
 
-from .llm_backend import LLMBackend, OllamaBackend
+from .llm_backend import LLMBackend, LLMTruncatedError, OllamaBackend
 from .text_postprocess import strip_filler_words
 
 logger = logging.getLogger(__name__)
@@ -263,10 +263,14 @@ class LLMCleanup:
         """Pre-load the model into memory for fast first inference."""
         self._backend.warm_up()
 
-    def speculative_cleanup(self, text: str, custom_prompt: str = None):
+    def speculative_cleanup(self, text: str, custom_prompt: str = None,
+                            allow_script_change: bool = False):
         """Fire-and-forget: run cleanup in background, cache result."""
         def _run():
-            result = self.cleanup(text, custom_prompt=custom_prompt)
+            result = self.cleanup(
+                text, custom_prompt=custom_prompt,
+                allow_script_change=allow_script_change,
+            )
             with self._speculative_lock:
                 self._speculative_input = text
                 self._speculative_result = result
@@ -288,7 +292,9 @@ class LLMCleanup:
             self._speculative_input = None
             self._speculative_result = None
 
-    def cleanup(self, raw_text: str, languages: Optional[list] = None, custom_prompt: str = None) -> str:
+    def cleanup(self, raw_text: str, languages: Optional[list] = None,
+                custom_prompt: str = None,
+                allow_script_change: bool = False) -> str:
         """Clean up raw ASR text using the LLM.
 
         Args:
@@ -299,6 +305,10 @@ class LLMCleanup:
                        unified into the target language(s).
             custom_prompt: If provided, use this as the user message with a
                            generic system prompt instead of the dictation prompt.
+            allow_script_change: Set True only for modes whose PURPOSE is to
+                change the language (e.g. translation modes). When False, a
+                custom-prompt result that flips the script (Chinese in,
+                English out) is rejected as model misbehavior.
 
         Returns the cleaned text, or the original text if cleanup fails.
         """
@@ -336,8 +346,27 @@ class LLMCleanup:
                             len(raw_text), len(result),
                         )
                         return pre_cleaned
+                    # Same translation guards as the default path: a model
+                    # that ignores "Do NOT translate" in a style prompt must
+                    # not silently replace the user's Chinese with English.
+                    # Translation modes opt out via allow_script_change.
+                    if not allow_script_change and (
+                        _script_changed(pre_cleaned, result)
+                        or _mixed_script_collapsed(pre_cleaned, result)
+                    ):
+                        logger.warning(
+                            "Custom LLM cleanup rejected (unrequested "
+                            "translation/script change). Falling back to "
+                            "rule-stripped text.",
+                        )
+                        return pre_cleaned
                     logger.info("Custom LLM: %r -> %r", raw_text, result)
                     return result
+            except LLMTruncatedError as e:
+                logger.warning(
+                    "Custom LLM output truncated (%s); using rule-stripped "
+                    "text so the tail of the dictation is not lost.", e,
+                )
             except Exception as e:
                 logger.warning("Custom LLM cleanup failed: %s", e)
             # Custom-prompt path failed: still return the rule-stripped text
@@ -401,6 +430,11 @@ class LLMCleanup:
                 logger.info("LLM cleanup: %r -> %r", raw_text, cleaned)
                 return cleaned
 
+        except LLMTruncatedError as e:
+            logger.warning(
+                "LLM output truncated (%s); using rule-stripped text so the "
+                "tail of the dictation is not lost.", e,
+            )
         except Exception as e:
             logger.warning("LLM cleanup failed: %s", e)
 

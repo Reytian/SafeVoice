@@ -42,6 +42,15 @@ DEFAULT_MLX_MODEL = "mlx-community/Qwen3.5-4B-4bit"
 # characters) is not silently truncated mid-sentence before being pasted.
 MAX_OUTPUT_TOKENS = 2048
 
+
+class LLMTruncatedError(RuntimeError):
+    """The backend stopped at its max-token cap; the output is cut mid-text.
+
+    Raised instead of returning the truncated string so llm_cleanup can fall
+    back to the rule-stripped transcript. Pasting a mid-sentence-cut rewrite
+    silently loses the tail of the dictation; the raw transcript never does.
+    """
+
 # Default model per cloud provider.
 CLOUD_DEFAULTS = {
     "openai": "gpt-4o-mini",
@@ -270,10 +279,8 @@ class OllamaBackend(LLMBackend):
         if content is None:
             raise RuntimeError("Ollama response contained no message content")
         if data.get("done_reason") == "length":
-            logger.warning(
-                "Ollama output hit the %d-token cap (truncated). The cleaned "
-                "text may be cut short; caller should prefer rule-stripped text.",
-                MAX_OUTPUT_TOKENS,
+            raise LLMTruncatedError(
+                f"Ollama output hit the {MAX_OUTPUT_TOKENS}-token cap"
             )
         return _strip_think_tags(content.strip())
 
@@ -468,7 +475,10 @@ class CloudBackend(LLMBackend):
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
+        return self._extract_text(data)
 
+    def _extract_text(self, data) -> str:
+        """Validate a provider response envelope and pull out the text."""
         if not isinstance(data, dict):
             raise RuntimeError(f"{self.provider} returned an unexpected response type")
         # Surface a provider error message before indexing, so auth/quota/
@@ -485,17 +495,23 @@ class CloudBackend(LLMBackend):
             choices = data.get("choices") or []
             if not choices:
                 raise RuntimeError(f"{self.provider} returned no choices")
+            if choices[0].get("finish_reason") == "length":
+                raise LLMTruncatedError(f"{self.provider} output hit the token cap")
             text = (choices[0].get("message") or {}).get("content")
         elif self.provider == "anthropic":
             content = data.get("content") or []
             if not content:
                 raise RuntimeError("Anthropic returned no content (possibly blocked or stopped)")
+            if data.get("stop_reason") == "max_tokens":
+                raise LLMTruncatedError("Anthropic output hit the token cap")
             text = content[0].get("text")
         elif self.provider == "google":
             # Gemini returns candidates=[] when a response is safety-blocked.
             candidates = data.get("candidates") or []
             if not candidates:
                 raise RuntimeError("Google returned no candidates (response likely blocked)")
+            if candidates[0].get("finishReason") == "MAX_TOKENS":
+                raise LLMTruncatedError("Google output hit the token cap")
             parts = (candidates[0].get("content") or {}).get("parts") or []
             if not parts:
                 raise RuntimeError("Google candidate had no content parts")
