@@ -2,18 +2,19 @@
 
 SafeVoice is a macOS menubar app that provides on-device speech recognition and text injection. Speak into your microphone and SafeVoice types the transcribed text into any active application.
 
-Powered by [Qwen3-ASR-0.6B](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-8bit) running locally on Apple Silicon via [MLX](https://github.com/ml-explore/mlx). No cloud services, no API keys, no data leaves your machine.
+Powered by [Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) running locally on Apple Silicon via [MLX](https://github.com/ml-explore/mlx). Speech recognition is fully on-device. Optional LLM text cleanup runs locally too (Ollama or native MLX); cloud LLM providers exist as an explicit opt-in and send transcript text to the configured provider.
 
 ## Features
 
 - On-device speech recognition (no internet required after model download)
-- Real-time streaming transcription with live preview
-- Supports Chinese, English, and French
-- Global hotkey activation (Option+Space)
+- 14 languages plus auto-detect (Chinese, English, French, Japanese, Korean, German, Spanish, and more)
+- Global hotkey activation (default: Option+Space, configurable in Settings)
 - Push-to-talk and toggle modes
-- Floating overlay showing transcription progress
-- Text injection into any application via clipboard
-- Menubar app with language and mode selection
+- Floating overlay with recording level, processing status, and paste confirmation
+- Optional LLM cleanup (filler-word removal, punctuation) via Ollama, native MLX, or cloud APIs
+- Processing modes (Quick, Formal Writing, English Translation) switchable from the menubar
+- Text injection into any application via clipboard paste
+- Usage dashboard and local transcription history
 
 ## Requirements
 
@@ -26,7 +27,7 @@ Powered by [Qwen3-ASR-0.6B](https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-
 ### 1. Clone and create virtual environment
 
 ```bash
-cd ~/Documents/voice-ime
+cd ~/Developer/voice-ime
 python3 -m venv .venv
 source .venv/bin/activate
 ```
@@ -43,7 +44,7 @@ pip install -r requirements.txt
 python scripts/setup_model.py
 ```
 
-This downloads the 8-bit quantized Qwen3-ASR-0.6B model (~700 MB) from HuggingFace Hub. The download only happens once; subsequent runs use the cached model.
+This downloads the Qwen3-ASR-0.6B model (~1.2 GB download, ~1.8 GB on disk) from HuggingFace Hub. The download only happens once; subsequent runs use the cached model.
 
 To see other available model variants:
 
@@ -75,23 +76,20 @@ python run.py
 
 | Hotkey | Action |
 |---|---|
-| **Option + Space** | Start/stop voice input |
-| **Ctrl + Space** | Cycle language (Chinese → English → French) |
+| **Option + Space** (default) | Start/stop voice input |
+
+The activation hotkey is configurable in Settings > Hotkeys (including modifier-only hotkeys such as holding Left Option).
 
 ### Modes
 
-- **Push-to-talk** (default, recommended): Hold Option+Space to record, release to transcribe and inject.
-- **Toggle**: Press Option+Space to start recording, press again to stop and transcribe.
+- **Push-to-talk** (default, recommended): Hold the hotkey to record, release to transcribe and inject.
+- **Toggle**: Press the hotkey to start recording, press again to stop and transcribe.
 
-Switch modes from the menubar dropdown.
+Switch input modes and processing modes (Quick, Formal Writing, English Translation) from the menubar dropdown.
 
 ### Languages
 
-Select a language from the menubar dropdown or cycle with Ctrl+Space:
-
-- **Chinese** (中文)
-- **English**
-- **French** (Français)
+Select a language from the menubar dropdown or in Settings > Languages. Auto-detect handles mixed-language (code-switching) dictation.
 
 ## Project Structure
 
