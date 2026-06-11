@@ -124,9 +124,13 @@ class DashboardWindow:
         self,
         settings_manager: SettingsManager,
         on_open_settings: Optional[Callable] = None,
+        status_provider: Optional[Callable] = None,
     ) -> None:
         self._mgr = settings_manager
         self._on_open_settings = on_open_settings
+        # Returns (text, is_ready); used to show the LIVE app state instead
+        # of a hardcoded "Ready".
+        self._status_provider = status_provider
         self._window: Optional[NSWindow] = None
         self._targets: list = []  # prevent GC of ObjC targets
 
@@ -354,6 +358,17 @@ class DashboardWindow:
 
     def _refresh_stats(self) -> None:
         """Read stats from the settings manager and update labels."""
+        if self._status_provider is not None and self._status_label is not None:
+            try:
+                text, is_ready = self._status_provider()
+                self._status_label.setStringValue_(text)
+                self._status_label.setTextColor_(
+                    NSColor.systemGreenColor() if is_ready
+                    else NSColor.systemOrangeColor()
+                )
+            except Exception:
+                pass
+
         stats = self._mgr.get_stats()
 
         if self._total_transcriptions_label:

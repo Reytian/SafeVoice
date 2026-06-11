@@ -360,9 +360,10 @@ class SettingsWindow:
         win.show()
     """
 
-    def __init__(self, settings_manager: SettingsManager, on_setting_changed=None, modes_manager=None, vocabulary_manager=None, on_llm_change=None) -> None:
+    def __init__(self, settings_manager: SettingsManager, on_setting_changed=None, modes_manager=None, vocabulary_manager=None, on_llm_change=None, on_modes_change=None) -> None:
         self._mgr = settings_manager
         self._on_llm_change = on_llm_change
+        self._on_modes_change = on_modes_change
         self._modes_manager = modes_manager
         self._vocabulary_manager = vocabulary_manager
         self._window: Optional[NSWindow] = None
@@ -939,9 +940,19 @@ class SettingsWindow:
         def _delete():
             self._modes_manager.remove(mode_name)
             self._refresh_modes_tab()
+            self._notify_modes_changed()
         target = _SettingsCallbackTarget.alloc().initWithCallback_(_delete)
         self._hotkey_delegates.append(target)
         return target
+
+    def _notify_modes_changed(self) -> None:
+        """Tell the app the mode list changed so live UI (menubar) updates."""
+        if self._on_modes_change is None:
+            return
+        try:
+            self._on_modes_change()
+        except Exception:
+            logger.exception("on_modes_change callback failed")
 
     def _refresh_modes_tab(self) -> None:
         """Re-populate the modes tab after data changes."""
@@ -1068,6 +1079,7 @@ class SettingsWindow:
             else:
                 self._modes_manager.add(new_mode)
             self._refresh_modes_tab()
+            self._notify_modes_changed()
             panel.close()
 
         save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(290, 20, 80, 30))

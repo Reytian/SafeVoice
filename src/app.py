@@ -225,10 +225,12 @@ class SafeVoiceApp(rumps.App):
             modes_manager=self._modes,
             vocabulary_manager=self._vocabulary,
             on_llm_change=self._on_llm_change,
+            on_modes_change=self._rebuild_modes_menu,
         )
         self._dashboard = DashboardWindow(
             self._settings,
             on_open_settings=lambda: self._settings_window.show(),
+            status_provider=self._dashboard_status,
         )
         self._active_mode = self._modes.get("Quick")
 
@@ -365,8 +367,33 @@ class SafeVoiceApp(rumps.App):
         self._active_mode = mode
         for key in self._modes_menu.keys():
             self._modes_menu[key].state = (key == name)
-        self._update_status(f"Mode: {name}")
+        self._update_status(self._idle_status_text())
         logger.info("Processing mode switched to %s", name)
+
+    def _rebuild_modes_menu(self):
+        """Rebuild the Processing Mode submenu after modes change in Settings.
+
+        Without this, modes added/renamed/deleted in the Modes tab only
+        appeared in the menubar after a relaunch.
+        """
+        def _do():
+            try:
+                names = [m.name for m in self._modes.get_all()]
+                current = self._active_mode.name if self._active_mode else None
+                self._modes_menu.clear()
+                for name in names:
+                    item = rumps.MenuItem(
+                        name, callback=self._make_processing_mode_callback(name)
+                    )
+                    item.state = (name == current)
+                    self._modes_menu[item.title] = item
+                if current not in names:
+                    # The active mode was deleted; fall back to Quick.
+                    self._set_active_processing_mode("Quick")
+            except Exception:
+                logger.exception("Failed to rebuild modes menu")
+
+        _run_on_main(_do)
 
     def _set_language(self, index):
         """Switch to a language by index."""
@@ -458,7 +485,7 @@ class SafeVoiceApp(rumps.App):
                 self._set_state(STATE_LOADING)
                 self._asr.load_model()
                 self._set_state(STATE_IDLE)
-                self._update_status("Ready")
+                self._update_status(self._idle_status_text())
                 print("[SafeVoice] Model loaded")
                 logger.info("ASR model loaded successfully")
                 # Warm up LLM after ASR is loaded to avoid cold-start latency
@@ -687,6 +714,31 @@ class SafeVoiceApp(rumps.App):
                 pass
 
         _run_on_main(_apply)
+
+    def _idle_status_text(self) -> str:
+        """Status-item text for the idle state, mode-aware.
+
+        Shows which processing mode will run on the next dictation so a
+        non-default mode (e.g. English Translation) is glanceable instead
+        of a surprise at paste time.
+        """
+        if self._active_mode is not None and self._active_mode.name != "Quick":
+            return f"Ready · {self._active_mode.name}"
+        return "Ready"
+
+    def _dashboard_status(self):
+        """(text, is_ready) for the dashboard's live status label."""
+        if not self._asr.is_loaded:
+            return ("Loading model...", False)
+        if self._state == STATE_IDLE:
+            return (self._idle_status_text(), True)
+        labels = {
+            STATE_LISTENING: "Listening...",
+            STATE_TRANSCRIBING: "Transcribing...",
+            STATE_INJECTING: "Pasting...",
+            STATE_LOADING: "Loading model...",
+        }
+        return (labels.get(self._state, "Busy..."), False)
 
     # -- Hotkey callbacks --
 
@@ -921,7 +973,7 @@ class SafeVoiceApp(rumps.App):
                 self._overlay.hide()
             finally:
                 self._set_state(STATE_IDLE)
-                self._update_status("Ready")
+                self._update_status(self._idle_status_text())
 
         t = threading.Thread(target=transcribe, daemon=True)
         t.start()
