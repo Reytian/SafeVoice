@@ -74,6 +74,7 @@ from .audio_capture import AudioCapture
 from .asr_engine import ASREngine
 from .text_injector import TextInjector
 from .hotkey_manager import HotkeyManager, describe_hotkey
+from .privacy import redact
 from .overlay import FloatingOverlay
 from .settings_manager import SettingsManager, SUPPORTED_LANGUAGES
 from .settings_window import SettingsWindow
@@ -785,7 +786,7 @@ class SafeVoiceApp(rumps.App):
                     cleaned = audio_preprocess.normalize_audio(full_audio)
                     # Skip VAD trim — torch import takes 40-70s on first call
                     text, lang = self._asr.transcribe(cleaned)
-                    logger.info("ASR result: %r (lang=%s)", text, lang)
+                    logger.info("ASR result: %s (lang=%s)", redact(text), lang)
 
                     # Apply vocabulary snippet replacements
                     text = self._vocabulary.apply_snippets(text)
@@ -822,7 +823,7 @@ class SafeVoiceApp(rumps.App):
                                 allow_script_change=self._mode_allows_translation(),
                             )
                         self._overlay.update_text(text)
-                        logger.info("Mode result: %r", text)
+                        logger.info("Mode result: %s", redact(text))
                     elif self._active_mode.prompt_template is None and self._llm.is_available() and is_long_enough:
                         # Quick mode: default cleanup
                         self._overlay.set_status("processing")
@@ -831,7 +832,7 @@ class SafeVoiceApp(rumps.App):
                         cleaned = self._llm.cleanup(text)
                         logger.info("LLM result: %r", cleaned)
                         if cleaned != text:
-                            print(f"[SafeVoice] LLM: {text!r} -> {cleaned!r}")
+                            print(f"[SafeVoice] LLM: {redact(text)} -> {redact(cleaned)}")
                             text = cleaned
                             self._overlay.update_text(text)
                     else:
@@ -842,7 +843,7 @@ class SafeVoiceApp(rumps.App):
                         # ASR with all hesitations intact.
                         if not is_long_enough:
                             logger.info(
-                                "Skipping LLM for short text: %r", stripped
+                                "Skipping LLM for short text: %s", redact(stripped)
                             )
                         else:
                             logger.info(
@@ -851,7 +852,7 @@ class SafeVoiceApp(rumps.App):
                         rule_cleaned = strip_filler_words(text)
                         if rule_cleaned != text:
                             logger.info(
-                                "Rule-strip: %r -> %r", text, rule_cleaned
+                                "Rule-strip: %s -> %s", redact(text), redact(rule_cleaned)
                             )
                             text = rule_cleaned
                             self._overlay.update_text(text)
@@ -972,9 +973,9 @@ class SafeVoiceApp(rumps.App):
 
         success = self._injector.inject(text)
         if success:
-            print(f"[SafeVoice] Injected: {text}")
+            print(f"[SafeVoice] Injected {len(text)} chars")
         else:
-            print(f"[SafeVoice] Injection failed for: {text}")
+            print(f"[SafeVoice] Injection failed ({len(text)} chars; kept on clipboard)")
             # Re-copy so the changeCount guard skips the injector's restore and
             # the transcript stays on the clipboard for manual paste.
             self._injector.copy_to_clipboard(text)
@@ -1005,6 +1006,17 @@ def main():
     print("SafeVoice - Voice Input for macOS")
     print("=" * 50)
     print()
+
+    # Tighten the log file run.py created in a shared directory: default
+    # umask leaves it world-readable. Resolve the path from the active
+    # handler so it stays correct if the log location ever moves.
+    for handler in logging.getLogger().handlers:
+        log_path = getattr(handler, "baseFilename", None)
+        if log_path:
+            try:
+                os.chmod(log_path, 0o600)
+            except OSError:
+                pass
 
     # Single-instance enforcement. If another SafeVoice.app is already
     # running, ask it to show its settings window (so the user gets visible

@@ -10,6 +10,7 @@ import threading
 from typing import Optional
 
 from .llm_backend import LLMBackend, LLMTruncatedError, OllamaBackend
+from .privacy import redact
 from .text_postprocess import strip_filler_words
 
 logger = logging.getLogger(__name__)
@@ -360,7 +361,7 @@ class LLMCleanup:
                             "rule-stripped text.",
                         )
                         return pre_cleaned
-                    logger.info("Custom LLM: %r -> %r", raw_text, result)
+                    logger.info("Custom LLM: %s -> %s", redact(raw_text), redact(result))
                     return result
             except LLMTruncatedError as e:
                 logger.warning(
@@ -381,8 +382,8 @@ class LLMCleanup:
                 # translation of a single-script input).
                 if _script_changed(pre_cleaned, cleaned):
                     logger.warning(
-                        "LLM cleanup rejected (translation detected): %r -> %r",
-                        raw_text, cleaned,
+                        "LLM cleanup rejected (translation detected): %s -> %s",
+                        redact(raw_text), redact(cleaned),
                     )
                     return pre_cleaned
                 # Guard: reject if mixed-language input collapsed to a
@@ -392,8 +393,8 @@ class LLMCleanup:
                 if _mixed_script_collapsed(pre_cleaned, cleaned):
                     logger.warning(
                         "LLM cleanup rejected (mixed-script collapse, "
-                        "loanwords were translated): %r -> %r",
-                        raw_text, cleaned,
+                        "loanwords were translated): %s -> %s",
+                        redact(raw_text), redact(cleaned),
                     )
                     return pre_cleaned
                 # Guard: reject runaway-length output. Cleanup should make
@@ -422,12 +423,12 @@ class LLMCleanup:
                 if _dropped_too_much(pre_cleaned, cleaned):
                     logger.warning(
                         "LLM cleanup rejected (over-deletion, no self-"
-                        "correction marker in input): %r -> %r. Falling "
+                        "correction marker in input): %s -> %s. Falling "
                         "back to rule-stripped text.",
-                        raw_text, cleaned,
+                        redact(raw_text), redact(cleaned),
                     )
                     return pre_cleaned
-                logger.info("LLM cleanup: %r -> %r", raw_text, cleaned)
+                logger.info("LLM cleanup: %s -> %s", redact(raw_text), redact(cleaned))
                 return cleaned
 
         except LLMTruncatedError as e:
