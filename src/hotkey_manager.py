@@ -153,14 +153,18 @@ class HotkeyManager:
 
     def stop(self) -> None:
         """Stop listening for hotkeys and clean up."""
+        # Snapshot under the lock, invoke outside it: the deactivate callback
+        # does slow work (stops audio, spawns the transcribe worker) and the
+        # CGEventTap callback thread also contends for this lock; holding it
+        # through the callback can stall the tap past its timeout.
+        callback = None
         with self._lock:
             if self._is_active and self._on_deactivate is not None:
-                try:
-                    self._on_deactivate()
-                except Exception:
-                    logger.exception("Error in on_deactivate during stop")
+                callback = self._on_deactivate
             self._is_active = False
             self._activate_trigger_held = False
+        if callback is not None:
+            self._safe_invoke(callback)
 
         self._stop_cg_tap()
         logger.info("HotkeyManager stopped")
@@ -171,32 +175,34 @@ class HotkeyManager:
             raise ValueError(
                 f"Unknown mode {mode!r}; expected 'push_to_talk' or 'toggle'"
             )
+        callback = None
         with self._lock:
             if mode == self._mode:
                 return
             if self._is_active and self._on_deactivate is not None:
-                try:
-                    self._on_deactivate()
-                except Exception:
-                    logger.exception("Error in on_deactivate during mode switch")
+                callback = self._on_deactivate
             self._mode = mode
             self._is_active = False
             self._activate_trigger_held = False
             logger.info("Hotkey mode changed to %s", mode)
+        # Invoke outside the lock (see stop() for why).
+        if callback is not None:
+            self._safe_invoke(callback)
 
     def set_activate_hotkey(self, config: Dict[str, Any]) -> None:
         """Update the activation hotkey from a settings dict."""
         key_code, mod_mask = _parse_activate_hotkey(config)
+        callback = None
         with self._lock:
             self._activate_key_code = key_code
             self._activate_mod_mask = mod_mask
             if self._is_active and self._on_deactivate is not None:
-                try:
-                    self._on_deactivate()
-                except Exception:
-                    logger.exception("Error in on_deactivate during hotkey change")
+                callback = self._on_deactivate
             self._is_active = False
             self._activate_trigger_held = False
+        # Invoke outside the lock (see stop() for why).
+        if callback is not None:
+            self._safe_invoke(callback)
         logger.info("Activate hotkey changed to %s", config)
 
     @property
@@ -352,8 +358,11 @@ class HotkeyManager:
             logger.warning(
                 "CGEventTap disabled (type=0x%x). Re-enabling.", event_type
             )
-            if self._cg_tap is not None:
-                Quartz.CGEventTapEnable(self._cg_tap, True)
+            # Capture once: _stop_cg_tap (permission-poll thread) can null
+            # self._cg_tap between the check and the call.
+            tap = self._cg_tap
+            if tap is not None:
+                Quartz.CGEventTapEnable(tap, True)
             # While the tap was disabled we may have missed the key/modifier
             # RELEASE that normally clears the edge state. If we don't reset it,
             # _activate_trigger_held stays stuck True and every subsequent press

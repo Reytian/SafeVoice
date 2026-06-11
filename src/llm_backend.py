@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import urllib.request
 import urllib.error
 from typing import Optional, Tuple
@@ -296,6 +297,11 @@ class MLXBackend(LLMBackend):
         self._model = None
         self._tokenizer = None
         self._available: Optional[bool] = None
+        # mlx_lm.generate is not reentrant: the speculative cleanup thread
+        # and the final cleanup can call chat() concurrently on the same
+        # Metal graph (crash/corruption). Serialize all inference, the same
+        # discipline as ASREngine._session_lock.
+        self._inference_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -316,16 +322,17 @@ class MLXBackend(LLMBackend):
     def warm_up(self) -> None:
         if not self.is_available():
             return
-        if self._model is not None:
-            return
-        try:
-            from mlx_lm import load
-            logger.info("Loading MLX model: %s", self.model_id)
-            self._model, self._tokenizer = load(self.model_id)
-            logger.info("MLX model loaded: %s", self.model_id)
-        except Exception as e:
-            logger.warning("MLX model load failed: %s", e)
-            self._available = False
+        with self._inference_lock:
+            if self._model is not None:
+                return
+            try:
+                from mlx_lm import load
+                logger.info("Loading MLX model: %s", self.model_id)
+                self._model, self._tokenizer = load(self.model_id)
+                logger.info("MLX model loaded: %s", self.model_id)
+            except Exception as e:
+                logger.warning("MLX model load failed: %s", e)
+                self._available = False
 
     def chat(self, system_prompt: str, user_message: str) -> str:
         if self._model is None:
@@ -335,22 +342,23 @@ class MLXBackend(LLMBackend):
 
         from mlx_lm import generate
 
-        prompt = self._tokenizer.apply_chat_template(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-        result = generate(
-            self._model,
-            self._tokenizer,
-            prompt=prompt,
-            max_tokens=MAX_OUTPUT_TOKENS,
-            temp=0.0,
-        )
+        with self._inference_lock:
+            prompt = self._tokenizer.apply_chat_template(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            result = generate(
+                self._model,
+                self._tokenizer,
+                prompt=prompt,
+                max_tokens=MAX_OUTPUT_TOKENS,
+                temp=0.0,
+            )
         return _strip_think_tags(result.strip())
 
 

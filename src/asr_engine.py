@@ -174,10 +174,14 @@ class ASREngine:
     def unload_model(self) -> None:
         """Release the model from memory.
 
-        Any active streaming session is discarded.
+        Any active streaming session is discarded. Takes the session lock so
+        an in-flight transcription completes first: quitting mid-transcription
+        raced this against the worker and turned the session into None under
+        the worker's feet.
         """
-        self._session = None
-        self._streaming_state = None
+        with self._session_lock:
+            self._session = None
+            self._streaming_state = None
         logger.info("ASR model unloaded.")
 
     # ------------------------------------------------------------------
@@ -256,7 +260,12 @@ class ASREngine:
             lang_hint: str | None = self.LANGUAGES.get(self._language)
 
             with self._session_lock:
-                result = self._session.transcribe(
+                # Re-check under the lock: unload_model (quit path) may have
+                # released the session between _ensure_model_loaded and here.
+                session = self._session
+                if session is None:
+                    raise ModelNotLoadedError("Model unloaded during transcription.")
+                result = session.transcribe(
                     audio,
                     language=lang_hint,
                     verbose=False,
@@ -295,13 +304,17 @@ class ASREngine:
         try:
             lang_hint: str | None = self.LANGUAGES.get(self._language)
 
-            self._streaming_state = self._session.init_streaming(
-                language=lang_hint,
-                chunk_size_sec=self._chunk_size_sec,
-                finalization_mode=self._finalization_mode,
-                endpointing_mode=self._endpointing_mode,
-                max_context_sec=self._max_context_sec,
-            )
+            with self._session_lock:
+                session = self._session
+                if session is None:
+                    raise ModelNotLoadedError("Model unloaded during streaming init.")
+                self._streaming_state = session.init_streaming(
+                    language=lang_hint,
+                    chunk_size_sec=self._chunk_size_sec,
+                    finalization_mode=self._finalization_mode,
+                    endpointing_mode=self._endpointing_mode,
+                    max_context_sec=self._max_context_sec,
+                )
             logger.debug(
                 "Streaming session started (lang=%s, chunk=%.1fs, "
                 "finalize=%s, endpoint=%s).",
