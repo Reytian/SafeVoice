@@ -59,3 +59,13 @@ def test_empty_store(store):
     assert entries == []
     stats = store.get_stats()
     assert stats["total_transcriptions"] == 0
+
+
+def test_clear_removes_all_entries(tmp_path):
+    from src.history import HistoryStore
+    store = HistoryStore(str(tmp_path / "h.db"))
+    store.add("first entry")
+    store.add("second entry")
+    assert len(store.get_recent()) == 2
+    assert store.clear() is True
+    assert store.get_recent() == []

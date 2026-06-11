@@ -120,6 +120,21 @@ class HistoryStore:
                 row = {k: entry.get(k, "") for k in writer.fieldnames}
                 writer.writerow(row)
 
+    def clear(self) -> bool:
+        """Delete all history entries. Returns True on success."""
+        with self._lock:
+            try:
+                conn = self._connect()
+                try:
+                    conn.execute("DELETE FROM history")
+                    conn.commit()
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                logger.exception("Failed to clear history at %s", self._db_path)
+                return False
+        return True
+
     def get_stats(self) -> dict:
         with self._lock:
             conn = self._connect()

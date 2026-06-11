@@ -83,6 +83,7 @@ from .dashboard_window import DashboardWindow
 from .llm_cleanup import LLMCleanup
 from .text_postprocess import strip_filler_words
 from .history import HistoryStore
+from .history_window import HistoryWindow
 from .vocabulary import VocabularyManager
 from .modes import ModeManager
 from .setup_wizard import SetupWizard
@@ -232,6 +233,7 @@ class SafeVoiceApp(rumps.App):
             on_open_settings=lambda: self._settings_window.show(),
             status_provider=self._dashboard_status,
         )
+        self._history_window = HistoryWindow(self._history)
         self._active_mode = self._modes.get("Quick")
 
         # Audio buffer for batch transcription
@@ -328,6 +330,9 @@ class SafeVoiceApp(rumps.App):
         # Dashboard
         dashboard_item = rumps.MenuItem("Dashboard...", callback=self._open_dashboard)
 
+        # History
+        history_item = rumps.MenuItem("History...", callback=self._open_history)
+
         # Settings
         settings_item = rumps.MenuItem("Settings...", callback=self._open_settings)
 
@@ -348,6 +353,7 @@ class SafeVoiceApp(rumps.App):
             self._modes_menu,
             None,
             dashboard_item,
+            history_item,
             settings_item,
             None,
             self._hotkey_info_item,
@@ -705,6 +711,10 @@ class SafeVoiceApp(rumps.App):
     def _open_dashboard(self, _):
         """Open the dashboard window."""
         self._dashboard.show()
+
+    def _open_history(self, _):
+        """Open the transcription history window."""
+        self._history_window.show()
 
     def _open_settings(self, _):
         """Open the settings window."""
