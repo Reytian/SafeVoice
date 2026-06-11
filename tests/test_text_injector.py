@@ -30,3 +30,16 @@ def test_plain_write_has_no_transient_types():
         assert pb.stringForType_(NSPasteboardTypeString) == "rescue copy"
     finally:
         pb.releaseGlobally()
+
+
+def test_friendly_error_messages():
+    from src.app import _friendly_error
+    from src.asr_engine import ASREngineError, ModelNotLoadedError
+
+    assert "still loading" in _friendly_error(ModelNotLoadedError("x"))
+    assert "Transcription failed" in _friendly_error(ASREngineError("boom"))
+    class PortAudioError(Exception):
+        pass
+    assert "Microphone" in _friendly_error(PortAudioError("-9986"))
+    assert "System error" in _friendly_error(OSError(28, "No space left"))
+    assert _friendly_error(ValueError("weird input")).startswith("Error: weird input")

@@ -119,6 +119,29 @@ STATE_LISTENING = "listening"
 STATE_TRANSCRIBING = "transcribing"
 STATE_INJECTING = "injecting"
 
+
+def _friendly_error(exc: Exception) -> str:
+    """Short, human-readable overlay message for a pipeline failure.
+
+    The overlay used to show raw exception text ("Error: [Errno -9986]...")
+    for the 1-2 s it is visible; the full traceback is always in the log,
+    so the overlay should say what the user can act on.
+    """
+    from .asr_engine import ASREngineError, ModelNotLoadedError
+    if isinstance(exc, ModelNotLoadedError):
+        return "Speech model is still loading. Try again in a moment."
+    if isinstance(exc, ASREngineError):
+        return "Transcription failed. Try again (details in log)."
+    name = type(exc).__name__
+    if "PortAudio" in name or "PortAudio" in str(exc):
+        return "Microphone unavailable. Check your input device."
+    if isinstance(exc, MemoryError):
+        return "Out of memory. Try a shorter dictation."
+    if isinstance(exc, OSError):
+        return "System error while transcribing (details in log)."
+    detail = str(exc).strip()
+    return f"Error: {detail[:80]}" if detail else f"Error: {name}"
+
 # Icon path for menubar
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ICON_PATH = os.path.join(_PROJECT_ROOT, "assets", "SafeVoice.icns")
@@ -893,8 +916,8 @@ class SafeVoiceApp(rumps.App):
                 timer_stop.set()
                 logger.exception("Transcription error")
                 self._overlay.set_status("error")
-                self._overlay.update_text(f"Error: {e}")
-                time.sleep(1.0)
+                self._overlay.update_text(_friendly_error(e))
+                time.sleep(1.6)
                 self._overlay.hide()
             finally:
                 self._set_state(STATE_IDLE)
