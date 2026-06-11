@@ -39,8 +39,20 @@ class VocabularyManager:
         self._snippets = snippets if isinstance(snippets, dict) else {}
 
     def _save(self):
-        with open(self._path, "w") as f:
-            json.dump({"hotwords": self._hotwords, "snippets": self._snippets}, f, indent=2)
+        # Write-then-rename so an interrupted write cannot truncate the file
+        # (a truncated file survives _load but loses every hotword/snippet).
+        # Errors are logged, not raised: _save runs inside NSButton callbacks
+        # where an unhandled Python exception is undefined behavior in PyObjC.
+        tmp_path = self._path + ".tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"hotwords": self._hotwords, "snippets": self._snippets},
+                    f, indent=2, ensure_ascii=False,
+                )
+            os.replace(tmp_path, self._path)
+        except OSError:
+            logger.warning("Failed to save vocabulary to %s", self._path, exc_info=True)
 
     def add_hotword(self, word: str):
         with self._lock:

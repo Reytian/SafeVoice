@@ -459,11 +459,11 @@ class SafeVoiceApp(rumps.App):
         cred_path = os.path.expanduser("~/.config/safevoice/credentials.json")
         try:
             if os.path.exists(cred_path):
-                with open(cred_path) as f:
+                with open(cred_path, encoding="utf-8") as f:
                     creds = json.load(f)
                 cloud_api_key = creds.get(cloud_provider, "")
         except Exception:
-            pass
+            logger.warning("Could not load credentials from %s", cred_path, exc_info=True)
         mlx_model = self._settings.get("llm_mlx_model", "mlx-community/Qwen3.5-4B-4bit")
         return get_backend(
             source=source, local_model=local_model,

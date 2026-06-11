@@ -2076,12 +2076,12 @@ class SettingsWindow:
         cred_path = os.path.expanduser("~/.config/safevoice/credentials.json")
         try:
             if os.path.exists(cred_path):
-                with open(cred_path) as f:
+                with open(cred_path, encoding="utf-8") as f:
                     creds = json.load(f)
                 key = creds.get(provider, "")
                 field.setStringValue_(key)
         except Exception:
-            pass
+            logger.warning("Could not load API key from %s", cred_path, exc_info=True)
 
     def _save_api_key(self, provider: str, api_key: str) -> None:
         """Save an API key to ~/.config/safevoice/credentials.json with 0600 perms."""
@@ -2092,14 +2092,27 @@ class SettingsWindow:
         creds = {}
         try:
             if os.path.exists(cred_path):
-                with open(cred_path) as f:
+                with open(cred_path, encoding="utf-8") as f:
                     creds = json.load(f)
+            if not isinstance(creds, dict):
+                creds = {}
         except Exception:
-            pass
+            logger.warning("Could not read %s; rewriting it", cred_path, exc_info=True)
+            creds = {}
         creds[provider] = api_key
-        with open(cred_path, "w") as f:
-            json.dump(creds, f, indent=2)
-        os.chmod(cred_path, 0o600)
+        # Write-then-rename: a crash between truncating and finishing the old
+        # in-place write destroyed EVERY saved key, and the silent loader
+        # then showed empty fields as if the user had never entered them.
+        tmp_path = cred_path + ".tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(creds, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, cred_path)
+        except OSError:
+            logger.warning("Failed to save credentials to %s", cred_path, exc_info=True)
 
     # ------------------------------------------------------------------
     # Sync UI state from SettingsManager

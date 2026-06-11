@@ -53,3 +53,29 @@ def test_empty_vocab(vocab):
     assert vocab.get_hotwords() == []
     assert vocab.get_snippets() == {}
     assert vocab.apply_snippets("hello") == "hello"
+
+
+def test_save_is_atomic_and_survives_reload(tmp_path):
+    path = str(tmp_path / "vocabulary.json")
+    from src.vocabulary import VocabularyManager
+    v1 = VocabularyManager(path)
+    v1.add_hotword("Kubernetes")
+    v1.add_snippet("addr", "1 Main St\\nNYC")
+    assert not (tmp_path / "vocabulary.json.tmp").exists()
+    v2 = VocabularyManager(path)
+    assert "Kubernetes" in v2.get_hotwords()
+    assert v2.get_snippets().get("addr") == "1 Main St\\nNYC"
+
+
+def test_save_failure_does_not_raise(tmp_path, monkeypatch):
+    # _save runs inside NSButton callbacks; an OSError must be swallowed
+    # (logged), never propagated into the ObjC bridge.
+    path = str(tmp_path / "vocabulary.json")
+    from src.vocabulary import VocabularyManager
+    v = VocabularyManager(path)
+    import os as _os
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(_os, "replace", boom)
+    v.add_hotword("StillWorks")  # must not raise
+    assert "StillWorks" in v.get_hotwords()
