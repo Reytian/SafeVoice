@@ -93,8 +93,36 @@ echo "[build] stripping iCloud / Finder xattrs from bundle"
 # still succeeds for everything else. Tolerate the exit code.
 xattr -cr "$APP" 2>/dev/null || true
 
-echo "[build] re-signing bundle (ad-hoc)"
-codesign --force --deep --sign - "$APP"
+# Sign with a stable Developer ID identity when one is available, otherwise
+# fall back to ad-hoc. This is the fix for the recurring "hotkey dead after
+# reboot" problem: macOS does NOT reliably persist an Accessibility (TCC)
+# grant for an AD-HOC signed app across a reboot/relogin, because there is no
+# stable signing identity to anchor it. Any real identity (Developer ID, or
+# even a self-signed cert) makes the grant survive. Set the identity via:
+#   export SAFEVOICE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+# or auto-detect the first Developer ID Application cert in the keychain.
+SIGN_ID="${SAFEVOICE_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_ID" ]; then
+    # The trailing `|| true` is load-bearing: under `set -euo pipefail`, a
+    # no-match `grep` returns 1 and would abort the whole build on a machine
+    # with no Developer ID cert (the common case). Swallow it so we reach the
+    # ad-hoc fallback below.
+    SIGN_ID="$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep "Developer ID Application" | head -1 \
+        | sed -E 's/^[[:space:]]*[0-9]+\) [0-9A-F]+ "([^"]+)".*/\1/' || true)"
+fi
+
+if [ -n "$SIGN_ID" ]; then
+    echo "[build] signing bundle with identity: $SIGN_ID"
+    ENTITLEMENTS="$ROOT/assets/SafeVoice.entitlements"
+    codesign --force --deep --options runtime \
+        --entitlements "$ENTITLEMENTS" \
+        --sign "$SIGN_ID" "$APP"
+else
+    echo "[build] no Developer ID identity found; re-signing ad-hoc"
+    echo "        (TCC grant will NOT survive reboot -- see SIGNING.md)"
+    codesign --force --deep --sign - "$APP"
+fi
 
 echo "[build] verifying signature"
 codesign -vv "$APP"

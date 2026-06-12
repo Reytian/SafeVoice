@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Microphone capture under the hardened runtime. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+
+	<!-- CPython + ctypes/libffi + mlx Metal JIT execute writable memory. -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- pip wheels (mlx, sounddevice, numpy, ...) are signed by other teams
+	     or ad-hoc; without this the hardened runtime refuses to load them. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- NOTE: deliberately NOT sandboxed. CGEventTap (global hotkey) and
+	     CGEventPost (paste) are incompatible with App Sandbox, which also
+	     rules out the Mac App Store. Direct notarized distribution only. -->
+</dict>
+</plist>
