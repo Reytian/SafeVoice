@@ -65,6 +65,10 @@ _DEFAULTS: Dict[str, Any] = {
     "llm_cloud_model": "gpt-4o-mini",
     "translation_language": "English",
     "asr_model": "Qwen/Qwen3-ASR-0.6B",
+    # Memory management: unload the resident ASR model after this many minutes
+    # of inactivity (reloaded lazily on the next hotkey press). 0 disables
+    # idle-unload and keeps the model resident for the whole session.
+    "asr_idle_unload_minutes": 10,
 }
 
 # Type alias for a change callback: (key, old_value, new_value) -> None.
