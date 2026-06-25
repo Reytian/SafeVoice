@@ -379,6 +379,7 @@ class MLXBackend(LLMBackend):
             self.warm_up()
 
         from mlx_lm import generate
+        from mlx_lm.sample_utils import make_sampler
 
         # Capture model/tokenizer into locals UNDER the lock so a concurrent
         # unload() (which nils self._model under the same lock, e.g. from the
@@ -399,12 +400,17 @@ class MLXBackend(LLMBackend):
                 add_generation_prompt=True,
                 enable_thinking=False,
             )
+            # Current mlx_lm (verified on 0.31.3) carries temperature in a
+            # sampler callable, not a temp= kwarg: generate() forwards **kwargs
+            # to generate_step(), which has no `temp` parameter and would raise
+            # "TypeError: got an unexpected keyword argument 'temp'". A
+            # make_sampler(temp=0.0) sampler keeps cleanup greedy/deterministic.
             result = generate(
                 model,
                 tokenizer,
                 prompt=prompt,
                 max_tokens=MAX_OUTPUT_TOKENS,
-                temp=0.0,
+                sampler=make_sampler(temp=0.0),
             )
         return _strip_think_tags(result.strip())
 
