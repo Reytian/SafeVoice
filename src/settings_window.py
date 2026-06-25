@@ -149,7 +149,10 @@ def _post_to_main(block) -> None:
 # ---------------------------------------------------------------------------
 
 _WINDOW_WIDTH = 500.0
-_WINDOW_HEIGHT = 400.0
+# 480 (was 400) to give the General tab room for the Memory / idle-unload
+# section. All window + tab frames derive from this constant, and every tab
+# lays out top-down, so the extra height just adds bottom room elsewhere.
+_WINDOW_HEIGHT = 480.0
 _TAB_PADDING = 20.0
 _ROW_HEIGHT = 28.0
 _LABEL_WIDTH = 140.0
@@ -360,6 +363,17 @@ class SettingsWindow:
         win.show()
     """
 
+    # (label, minutes) options for the idle-unload popup. 0 = never unload
+    # (keep the model resident for the whole session). Mirrors the
+    # asr_idle_unload_minutes setting default of 10.
+    _IDLE_UNLOAD_OPTIONS = [
+        ("Never (keep model loaded)", 0),
+        ("After 5 minutes", 5),
+        ("After 10 minutes", 10),
+        ("After 20 minutes", 20),
+        ("After 30 minutes", 30),
+    ]
+
     def __init__(self, settings_manager: SettingsManager, on_setting_changed=None, modes_manager=None, vocabulary_manager=None, on_llm_change=None, on_modes_change=None) -> None:
         self._mgr = settings_manager
         self._on_llm_change = on_llm_change
@@ -376,6 +390,7 @@ class SettingsWindow:
         self._speed_fast_btn: Optional[NSButton] = None
         self._speed_accurate_btn: Optional[NSButton] = None
         self._activate_hotkey_field: Optional[NSTextField] = None
+        self._idle_unload_popup: Optional[NSPopUpButton] = None
 
         self._build_window()
 
@@ -583,7 +598,58 @@ class SettingsWindow:
         )
         view.addSubview_(speed_desc)
 
+        # --- Memory section: idle-unload timeout (label + popup on one row) ---
+        y -= 24  # spacer
+        y -= _ROW_HEIGHT
+        view.addSubview_(self._make_section_label("Memory", y + 4))
+
+        y -= _ROW_HEIGHT + 4
+        view.addSubview_(self._make_label(
+            "Unload model when idle:",
+            NSMakeRect(_TAB_PADDING, y, _LABEL_WIDTH, _ROW_HEIGHT),
+            font_size=13.0,
+        ))
+        self._idle_unload_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
+            NSMakeRect(_CONTROL_X, y, 230, 26), False
+        )
+        current_minutes = self._mgr.get("asr_idle_unload_minutes", 10)
+        selected_idx = 0
+        for i, (title, minutes) in enumerate(self._IDLE_UNLOAD_OPTIONS):
+            self._idle_unload_popup.addItemWithTitle_(title)
+            if minutes == current_minutes:
+                selected_idx = i
+        self._idle_unload_popup.selectItemAtIndex_(selected_idx)
+        idle_target = _SettingsCallbackTarget.alloc().initWithCallback_(
+            self._on_idle_unload_changed
+        )
+        self._hotkey_delegates.append(idle_target)
+        self._idle_unload_popup.setTarget_(idle_target)
+        self._idle_unload_popup.setAction_("invoke")
+        view.addSubview_(self._idle_unload_popup)
+
+        y -= _ROW_HEIGHT
+        view.addSubview_(self._make_label(
+            "Frees ~1.8 GB after inactivity; the model reloads automatically "
+            "on your next hotkey press.",
+            NSMakeRect(_TAB_PADDING, y - 6, _WINDOW_WIDTH - 2 * _TAB_PADDING, 30),
+            font_size=11.0,
+            color=NSColor.secondaryLabelColor(),
+        ))
+
         return view
+
+    def _on_idle_unload_changed(self):
+        """Persist the idle-unload timeout chosen in the General-tab popup.
+
+        The app's idle monitor re-reads this setting each tick, so the change
+        takes effect without a restart.
+        """
+        popup = getattr(self, "_idle_unload_popup", None)
+        if popup is None:
+            return
+        idx = popup.indexOfSelectedItem()
+        if 0 <= idx < len(self._IDLE_UNLOAD_OPTIONS):
+            self._mgr.set("asr_idle_unload_minutes", self._IDLE_UNLOAD_OPTIONS[idx][1])
 
     def _make_mode_target(self, mode_value: str):
         """Create a target that sets mode and updates radio button states."""
@@ -2159,6 +2225,15 @@ class SettingsWindow:
         if self._speed_fast_btn and self._speed_accurate_btn:
             self._speed_fast_btn.setState_(NSOnState if speed == "fast" else NSOffState)
             self._speed_accurate_btn.setState_(NSOnState if speed == "accurate" else NSOffState)
+
+        # Memory: idle-unload timeout popup
+        idle_popup = getattr(self, "_idle_unload_popup", None)
+        if idle_popup is not None:
+            minutes = settings.get("asr_idle_unload_minutes", 10)
+            for i, (_title, m) in enumerate(self._IDLE_UNLOAD_OPTIONS):
+                if m == minutes:
+                    idle_popup.selectItemAtIndex_(i)
+                    break
 
         # Languages (multi-select)
         selected_langs = settings.get("languages", ["Auto"])
