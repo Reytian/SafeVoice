@@ -68,3 +68,18 @@ def test_default_asr_idle_unload_minutes_is_ten(tmp_path):
     from src.settings_manager import SettingsManager
     mgr = SettingsManager(config_path=tmp_path / "settings.json")
     assert mgr.get("asr_idle_unload_minutes") == 10
+
+
+# --- Settings UI option set -----------------------------------------------
+
+def test_idle_unload_options_cover_default_and_disable():
+    # The General-tab popup must offer "never" (0) and the settings default (10),
+    # and every option must be a non-negative integer minute count.
+    from src.settings_window import SettingsWindow
+    options = SettingsWindow._IDLE_UNLOAD_OPTIONS
+    minutes = [m for _label, m in options]
+    assert 0 in minutes          # disable / keep loaded
+    assert 10 in minutes         # matches asr_idle_unload_minutes default
+    assert all(isinstance(m, int) and m >= 0 for _label, m in options)
+    labels = [label for label, _m in options]
+    assert len(labels) == len(set(labels))  # labels are unique
