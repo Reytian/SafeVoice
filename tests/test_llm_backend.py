@@ -169,3 +169,47 @@ def test_custom_path_truncation_falls_back():
     raw = "please make this sentence sound a little more professional thanks"
     out = llm.cleanup(raw, custom_prompt=f"Formal: {raw}")
     assert "professional" in out
+
+
+# --- Ollama keep_alive: bound the resident model lifetime -----------------
+
+def test_ollama_chat_body_includes_keep_alive():
+    from src.llm_backend import OllamaBackend, OLLAMA_KEEP_ALIVE
+    backend = OllamaBackend(model="qwen2.5:3b")
+    body = backend._build_chat_body("system", "clean this up")
+    assert body["keep_alive"] == OLLAMA_KEEP_ALIVE
+
+
+def test_ollama_warmup_body_includes_keep_alive():
+    from src.llm_backend import OllamaBackend, OLLAMA_KEEP_ALIVE
+    backend = OllamaBackend(model="qwen2.5:3b")
+    body = backend._build_warmup_body()
+    assert body["keep_alive"] == OLLAMA_KEEP_ALIVE
+
+
+def test_ollama_keep_alive_is_short():
+    # The cleanup model should linger only briefly after use, not 30 min.
+    from src.llm_backend import OLLAMA_KEEP_ALIVE
+    assert OLLAMA_KEEP_ALIVE == "5m"
+
+
+# --- Backend unload: release in-process model memory ----------------------
+
+def test_base_backend_unload_is_noop():
+    # Ollama/Cloud hold nothing in SafeVoice's process; unload must exist
+    # and be a safe no-op so callers can invoke it uniformly.
+    from src.llm_backend import OllamaBackend, CloudBackend
+    OllamaBackend(model="qwen2.5:3b").unload()
+    CloudBackend(provider="openai", model="gpt-4o-mini", api_key="k").unload()
+
+
+def test_mlx_backend_unload_releases_model_references():
+    from src.llm_backend import MLXBackend
+    backend = MLXBackend()
+    backend._model = object()      # pretend a ~2.3 GB model is loaded
+    backend._tokenizer = object()
+
+    backend.unload()
+
+    assert backend._model is None
+    assert backend._tokenizer is None

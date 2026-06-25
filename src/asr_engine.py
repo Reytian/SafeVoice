@@ -19,6 +19,48 @@ logger = logging.getLogger(__name__)
 # HuggingFace Hub default cache directory on macOS
 _HF_CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 
+# Cap the MLX allocator's reusable buffer pool. MLX keeps freed Metal buffers
+# in a process-global cache for reuse; without a cap a single long dictation
+# can leave several GB of reclaimable buffers parked between passes. This is a
+# backstop against pathological growth, set safely above a normal pass's
+# working set so it does NOT force per-pass reallocation (which would add
+# latency). Idle eviction (unload_model -> _clear_mlx_cache) does the heavy
+# reclaim; tune this down only after measuring get_cache_memory() for typical
+# dictations.
+_MLX_CACHE_LIMIT_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB
+
+
+def _clear_mlx_cache() -> None:
+    """Return MLX's cached Metal buffers to the OS.
+
+    Dropping the Python reference to the Session makes its weights eligible for
+    GC, but MLX parks freed buffers in a process-global allocator cache that
+    survives object destruction; only ``clear_cache()`` releases them. Lazy
+    import (so importing this module never pulls in mlx.core) and a safe no-op
+    if MLX is unavailable.
+    """
+    try:
+        import mlx.core as mx
+
+        mx.clear_cache()
+    except Exception:
+        logger.debug(
+            "mx.clear_cache() unavailable; Metal cache not trimmed", exc_info=True
+        )
+
+
+def _apply_mlx_cache_limit() -> None:
+    """Cap the MLX allocator's reusable buffer pool (see ``_MLX_CACHE_LIMIT_BYTES``)."""
+    try:
+        import mlx.core as mx
+
+        mx.set_cache_limit(_MLX_CACHE_LIMIT_BYTES)
+    except Exception:
+        logger.debug(
+            "mx.set_cache_limit() unavailable; cache pool left uncapped",
+            exc_info=True,
+        )
+
 
 class ASREngineError(Exception):
     """Base exception for ASR engine errors."""
@@ -153,6 +195,10 @@ class ASREngine:
             # Without this, the first real transcription takes 10-30x longer.
             warmup_audio = np.zeros(16000, dtype=np.float32)  # 1s silence
             self._session.transcribe(warmup_audio, language="English", verbose=False)
+            # Cap the allocator's reusable buffer pool now that the model is
+            # materialized, so a long single dictation cannot leave several GB
+            # of reclaimable Metal buffers parked between passes.
+            _apply_mlx_cache_limit()
             logger.info("ASR model ready (warmup complete).")
         except Exception as exc:
             self._session = None
@@ -182,6 +228,15 @@ class ASREngine:
         with self._session_lock:
             self._session = None
             self._streaming_state = None
+        # Releasing the Python reference is not enough: MLX parks freed Metal
+        # buffers in a process-global allocator cache. Trim it so idle-unload
+        # actually returns memory to the OS instead of leaving ~GBs cached.
+        # Defense-in-depth: this runs on the quit and idle paths and must never
+        # raise, regardless of how _clear_mlx_cache evolves.
+        try:
+            _clear_mlx_cache()
+        except Exception:
+            logger.debug("MLX cache trim failed on unload", exc_info=True)
         logger.info("ASR model unloaded.")
 
     # ------------------------------------------------------------------

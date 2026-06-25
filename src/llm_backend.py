@@ -37,6 +37,14 @@ def find_ollama() -> str:
 DEFAULT_LOCAL_MODEL = "qwen2.5:3b"
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3.5-4B-4bit"
 
+# How long Ollama keeps the cleanup model resident after a request. Sent on
+# BOTH the warm-up and the real chat path so the ~3 GB model is released a few
+# minutes after a dictation burst ends instead of lingering (the old 30m
+# warm-up value, with chat() sending nothing, meant the lifetime was governed
+# by accident). Short window trades a possible reload after a >5 min gap for
+# prompt release of idle memory in the separate ollama process.
+OLLAMA_KEEP_ALIVE = "5m"
+
 # Max output tokens for a cleanup response. Kept well above the old 512 so a
 # long multi-sentence dictation (especially CJK, where 512 tokens is far fewer
 # characters) is not silently truncated mid-sentence before being pasted.
@@ -172,6 +180,15 @@ class LLMBackend:
         """Optional: pre-load model into memory."""
         pass
 
+    def unload(self) -> None:
+        """Release any in-process model held by this backend.
+
+        No-op by default: Ollama and cloud backends hold nothing in
+        SafeVoice's own process. In-process backends (MLX) override this to
+        free their resident weights so callers can evict uniformly.
+        """
+        pass
+
 
 class OllamaBackend(LLMBackend):
     """Local Ollama backend."""
@@ -211,16 +228,20 @@ class OllamaBackend(LLMBackend):
             self._available = None
             return False
 
+    def _build_warmup_body(self) -> dict:
+        """Construct the /api/generate warm-up request body."""
+        return {
+            "model": self.model,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "prompt": "",
+        }
+
     def warm_up(self) -> None:
         """Pre-load the model into Ollama's memory."""
         if not self.is_available():
             return
         try:
-            body = json.dumps({
-                "model": self.model,
-                "keep_alive": "30m",
-                "prompt": "",
-            }).encode()
+            body = json.dumps(self._build_warmup_body()).encode()
             req = urllib.request.Request(
                 f"{self._base_url}/api/generate",
                 data=body,
@@ -232,6 +253,32 @@ class OllamaBackend(LLMBackend):
             logger.info("LLM model warmed up: %s", self.model)
         except Exception as e:
             logger.warning("LLM warm-up failed: %s", e)
+
+    def _build_chat_body(self, system_prompt: str, user_message: str) -> dict:
+        """Construct the /api/chat request body, including keep_alive.
+
+        For models with toggleable reasoning (Qwen3 family) we append the
+        ``/no_think`` directive so the model answers directly instead of
+        emitting 500+ tokens of internal monologue.
+        """
+        system_prompt = system_prompt + _directive_for_model(self.model)
+        return {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "stream": False,
+            # keep_alive bounds how long Ollama keeps the ~3 GB model resident
+            # after this request; sent here (the real path) and on warm-up so
+            # the lifetime is deliberate, not governed by Ollama's default.
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            # think:false disables internal reasoning for thinking-capable
+            # models on Ollama 0.4+. Older Ollama / non-thinking models
+            # ignore the field, so it's safe to always send.
+            "think": False,
+            "options": {"temperature": 0.0, "num_predict": MAX_OUTPUT_TOKENS, "top_p": 0.9},
+        }
 
     def chat(self, system_prompt: str, user_message: str) -> str:
         """Send a chat request to Ollama and return the cleaned reply.
@@ -245,21 +292,7 @@ class OllamaBackend(LLMBackend):
         "OK" is the difference between a snappy dictation app and a
         sluggish one.
         """
-        system_prompt = system_prompt + _directive_for_model(self.model)
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ]
-        body = json.dumps({
-            "model": self.model,
-            "messages": messages,
-            "stream": False,
-            # think:false disables internal reasoning for thinking-capable
-            # models on Ollama 0.4+. Older Ollama / non-thinking models
-            # ignore the field, so it's safe to always send.
-            "think": False,
-            "options": {"temperature": 0.0, "num_predict": MAX_OUTPUT_TOKENS, "top_p": 0.9},
-        }).encode()
+        body = json.dumps(self._build_chat_body(system_prompt, user_message)).encode()
         req = urllib.request.Request(
             f"{self._base_url}/api/chat",
             data=body,
@@ -344,13 +377,20 @@ class MLXBackend(LLMBackend):
     def chat(self, system_prompt: str, user_message: str) -> str:
         if self._model is None:
             self.warm_up()
-        if self._model is None:
-            raise RuntimeError("MLX model not loaded")
 
         from mlx_lm import generate
 
+        # Capture model/tokenizer into locals UNDER the lock so a concurrent
+        # unload() (which nils self._model under the same lock, e.g. from the
+        # idle-unload monitor or a backend switch) cannot pull the model out
+        # from under an in-flight generate(): the locals keep the objects alive
+        # for this call even if self._model becomes None mid-flight.
         with self._inference_lock:
-            prompt = self._tokenizer.apply_chat_template(
+            model = self._model
+            tokenizer = self._tokenizer
+            if model is None:
+                raise RuntimeError("MLX model not loaded")
+            prompt = tokenizer.apply_chat_template(
                 [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
@@ -360,13 +400,32 @@ class MLXBackend(LLMBackend):
                 enable_thinking=False,
             )
             result = generate(
-                self._model,
-                self._tokenizer,
+                model,
+                tokenizer,
                 prompt=prompt,
                 max_tokens=MAX_OUTPUT_TOKENS,
                 temp=0.0,
             )
         return _strip_think_tags(result.strip())
+
+    def unload(self) -> None:
+        """Release the in-process MLX model (~2.3 GB) and trim the Metal cache.
+
+        Dropping the references alone does not reclaim the weights: MLX parks
+        freed buffers in a process-global cache that only ``clear_cache()``
+        returns to the OS. Resetting ``_available`` lets a later ``chat()``
+        re-warm the model on demand.
+        """
+        with self._inference_lock:
+            self._model = None
+            self._tokenizer = None
+            self._available = None
+        try:
+            import mlx.core as mx
+
+            mx.clear_cache()
+        except Exception:
+            logger.debug("mx.clear_cache() unavailable on MLX unload", exc_info=True)
 
 
 class CloudBackend(LLMBackend):

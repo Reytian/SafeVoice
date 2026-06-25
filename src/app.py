@@ -77,6 +77,7 @@ from .hotkey_manager import HotkeyManager, describe_hotkey
 from .privacy import redact
 from .overlay import FloatingOverlay
 from .settings_manager import SettingsManager, SUPPORTED_LANGUAGES
+from .idle_policy import should_unload_idle
 from .settings_window import SettingsWindow
 from . import audio_preprocess
 from .dashboard_window import DashboardWindow
@@ -284,6 +285,14 @@ class SafeVoiceApp(rumps.App):
         # download of the same 1.2 GB repo. If the user skips or closes the
         # wizard, the first hotkey press triggers the load on demand.
         self._model_loading = False
+
+        # Idle-unload: release the resident ASR model (and any in-process LLM
+        # backend) after a period of inactivity to reclaim ~1.8 GB, reloading
+        # lazily on the next hotkey press. The monitor thread starts at the end
+        # of __init__; _last_activity is bumped on every dictation.
+        self._last_activity = time.monotonic()
+        self._idle_unload_stop = threading.Event()
+
         if self._settings.get("first_run", True) and not ASREngine.is_model_downloaded():
             logger.info("First run without model: deferring download to the setup wizard")
             self._update_status("Finish setup to download the speech model")
@@ -296,6 +305,9 @@ class SafeVoiceApp(rumps.App):
 
         # Set up dock click handler after rumps initializes its delegate
         threading.Timer(1.0, self._setup_dock_click_handler).start()
+
+        # Start the idle-unload monitor (frees the ASR model after inactivity).
+        self._start_idle_unload_monitor()
 
     def _build_menu(self):
         """Build the menubar dropdown menu."""
@@ -541,13 +553,14 @@ class SafeVoiceApp(rumps.App):
                 self._update_status(self._idle_status_text())
                 print("[SafeVoice] Model loaded")
                 logger.info("ASR model loaded successfully")
-                # Warm up LLM after ASR is loaded to avoid cold-start latency
+                # The LLM cleanup model is intentionally NOT warmed up here.
+                # Warming it eagerly pinned a multi-GB model (Ollama ~3 GB via
+                # keep_alive, or ~2.3 GB in-process on MLX) before the user
+                # dictated once. The backends self-load on first cleanup
+                # (Ollama on the first /api/chat; MLXBackend.chat self-warms),
+                # so we defer that cost to first real use to keep idle RAM low.
                 if self._llm.is_available():
-                    print("[SafeVoice] Warming up LLM...")
-                    logger.info("Warming up LLM model...")
-                    self._llm.warm_up()
-                    print("[SafeVoice] LLM ready")
-                    logger.info("LLM model warmed up and ready")
+                    logger.info("LLM cleanup available (warm-up deferred to first use)")
                 else:
                     print("[SafeVoice] LLM cleanup unavailable (install Ollama + `ollama pull qwen2.5:3b`)")
                     logger.warning("LLM cleanup unavailable")
@@ -568,6 +581,77 @@ class SafeVoiceApp(rumps.App):
 
         t = threading.Thread(target=load, daemon=True)
         t.start()
+
+    # How often the idle-unload monitor wakes. The timeout is in minutes, so
+    # a 30 s granularity is precise enough and effectively free.
+    _IDLE_CHECK_GRANULARITY_SEC = 30.0
+
+    def _mark_activity(self):
+        """Record that a dictation just happened, resetting the idle clock."""
+        self._last_activity = time.monotonic()
+
+    def _start_idle_unload_monitor(self):
+        """Spawn the daemon thread that evicts the ASR model after inactivity."""
+        def monitor():
+            while not self._idle_unload_stop.wait(self._IDLE_CHECK_GRANULARITY_SEC):
+                try:
+                    self._maybe_unload_idle()
+                except Exception:
+                    logger.exception("Idle-unload monitor tick failed")
+
+        threading.Thread(target=monitor, daemon=True, name="idle-unload").start()
+
+    def _maybe_unload_idle(self):
+        """Unload the ASR model (and in-process LLM) if idle past the timeout.
+
+        Reads the timeout from settings each tick so a change in the Settings
+        window takes effect without a restart.
+
+        Thread-safety: this runs on a daemon thread and reads app state owned by
+        other threads. We deliberately do NOT take a cross-thread lock around
+        the unload, because _on_hotkey_activate runs on the CGEventTap callback
+        thread and must never block on a slow operation (a blocked tap trips
+        kCGEventTapDisabledByTimeout and wedges the hotkey). Instead we re-read
+        the state as late as possible (below) and rely on two existing safety
+        nets for the residual sub-statement race: unload_model() holds the ASR
+        session lock so an in-flight transcription finishes first, and
+        transcribe() re-checks the session under that lock and raises
+        ModelNotLoadedError (surfaced as a friendly "still loading" overlay)
+        rather than crashing. The lazy reload is handled by _on_hotkey_activate.
+        """
+        try:
+            timeout = float(self._settings.get("asr_idle_unload_minutes", 10))
+        except (TypeError, ValueError):
+            timeout = 10.0
+        if not should_unload_idle(
+            now=time.monotonic(),
+            last_activity=self._last_activity,
+            timeout_minutes=timeout,
+            is_loaded=self._asr.is_loaded,
+            is_idle_state=(self._state == STATE_IDLE and not self._model_loading),
+        ):
+            return
+
+        # Re-read state as late as possible: a hotkey press may have started a
+        # recording or a reload since the decision above. This guard also keeps
+        # the _model_loading invariant the lazy-reload path depends on -- we only
+        # unload when no load is in flight, so _start_model_load's
+        # `if self._model_loading or self._asr.is_loaded` guard later sees
+        # _model_loading == False and is free to reload on the next press.
+        if self._state != STATE_IDLE or self._model_loading or not self._asr.is_loaded:
+            return
+
+        logger.info("ASR idle for >= %.0f min; unloading model to free memory", timeout)
+        self._asr.unload_model()
+        # Also release the in-process LLM backend if it holds weights (MLX); a
+        # no-op for Ollama/cloud, which keep nothing in SafeVoice's process. A
+        # double unload (if _on_llm_change is racing a backend switch) is
+        # idempotent: nilling already-None references is harmless.
+        try:
+            self._llm_backend.unload()
+        except Exception:
+            logger.debug("LLM backend unload on idle failed", exc_info=True)
+        self._update_status("Speech model unloaded (idle). Press the hotkey to reload.")
 
     def _show_setup_wizard(self):
         """Show setup wizard, dispatched to main thread for AppKit safety."""
@@ -651,8 +735,16 @@ class SafeVoiceApp(rumps.App):
 
     def _on_llm_change(self):
         """Callback when the user changes LLM settings in the Models tab."""
+        old_backend = self._llm_backend
         self._llm_backend = self._create_llm_backend()
         self._llm.set_backend(self._llm_backend)
+        # Free the previous in-process backend before dropping it: MLX holds
+        # ~2.3 GB that a plain reference-drop never reclaims. No-op for
+        # Ollama/cloud, which keep nothing in SafeVoice's process.
+        try:
+            old_backend.unload()
+        except Exception:
+            logger.debug("Old LLM backend unload failed", exc_info=True)
         logger.info("LLM backend changed to: %s", self._llm_backend.name)
 
     def _on_setting_changed(self, key, old_value, new_value):
@@ -827,6 +919,9 @@ class SafeVoiceApp(rumps.App):
         toggle state and the next press is a clean activation.
         """
         try:
+            # Any hotkey press counts as activity and resets the idle-unload
+            # clock, so the model is not evicted between utterances in a session.
+            self._mark_activity()
             logger.debug("Hotkey activate, state=%s", self._state)
             if self._state not in (STATE_IDLE,):
                 return False
@@ -1066,6 +1161,9 @@ class SafeVoiceApp(rumps.App):
             finally:
                 self._set_state(STATE_IDLE)
                 self._update_status(self._idle_status_text())
+                # A finished dictation is the most recent activity; reset the
+                # idle clock so the unload timeout counts from completion.
+                self._mark_activity()
 
         t = threading.Thread(target=transcribe, daemon=True)
         t.start()
@@ -1195,6 +1293,8 @@ class SafeVoiceApp(rumps.App):
     def _on_quit(self, _):
         """Clean up and quit."""
         print("[SafeVoice] Quitting...")
+        # Stop the idle-unload monitor so it cannot race teardown.
+        self._idle_unload_stop.set()
         if self._app_nap_token is not None:
             NSProcessInfo.processInfo().endActivity_(self._app_nap_token)
             self._app_nap_token = None
