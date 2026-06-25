@@ -213,3 +213,55 @@ def test_mlx_backend_unload_releases_model_references():
 
     assert backend._model is None
     assert backend._tokenizer is None
+
+
+# --- MLX backend generation API contract ----------------------------------
+# Pins MLXBackend.chat() to the installed mlx_lm generate() API. In mlx_lm
+# 0.31.x, generate() forwards its **kwargs down to generate_step(), which has
+# NO `temp` parameter, so the old `temp=0.0` call raised at generation time:
+#   TypeError: generate_step() got an unexpected keyword argument 'temp'
+# Temperature is now supplied via a sampler (sample_utils.make_sampler).
+
+class _FakeMLXTokenizer:
+    """Minimal tokenizer stub: returns a fixed prompt, ignores template args."""
+
+    def apply_chat_template(self, messages, tokenize=False,
+                            add_generation_prompt=True, **kwargs):
+        return "PROMPT"
+
+
+def test_mlx_chat_uses_sampler_not_temp(monkeypatch):
+    """MLXBackend.chat() must call generate() with kwargs the real
+    generate_step() accepts: a `sampler` callable, never the removed `temp`."""
+    mlx_lm = pytest.importorskip("mlx_lm")
+    import inspect
+    from mlx_lm.generate import generate_step
+    from src.llm_backend import MLXBackend
+
+    captured = {}
+
+    def fake_generate(model, tokenizer, prompt, **kwargs):
+        captured["kwargs"] = kwargs
+        return "  cleaned text  "
+
+    # chat() does `from mlx_lm import generate` at call time, so replacing the
+    # attribute on the mlx_lm package intercepts it.
+    monkeypatch.setattr(mlx_lm, "generate", fake_generate)
+
+    backend = MLXBackend(model="test/model")
+    # Bypass the real multi-GB model load; chat() only needs these set.
+    backend._model = object()
+    backend._tokenizer = _FakeMLXTokenizer()
+
+    result = backend.chat("system prompt", "user message")
+
+    assert result == "cleaned text"  # chat() strips the reply
+    kwargs = captured["kwargs"]
+    # Regression guard: the removed `temp` kwarg must never come back.
+    assert "temp" not in kwargs
+    # Temperature now travels via a sampler callable.
+    assert callable(kwargs.get("sampler"))
+    # Strongest pin: the forwarded kwargs must bind against the REAL
+    # generate_step signature -- exactly where generate() forwards them and
+    # where `temp` blew up. Catches any future mlx_lm sampling-API drift.
+    inspect.signature(generate_step).bind_partial(**kwargs)
