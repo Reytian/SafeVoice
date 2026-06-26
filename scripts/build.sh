@@ -42,7 +42,7 @@ if [ "$BUILD_MODE" = "standalone" ]; then
     "$VENV_PY" - <<'PY'
 import os, sysconfig
 sp = sysconfig.get_paths()["purelib"]
-for pkg in ("mlx", "mlx_lm", "mlx_qwen3_asr"):
+for pkg in ("mlx", "mlx_lm", "mlx_qwen3_asr", "google"):
     pkg_dir = os.path.join(sp, pkg)
     init = os.path.join(pkg_dir, "__init__.py")
     if os.path.isdir(pkg_dir) and not os.path.exists(init):
@@ -112,20 +112,31 @@ if [ -z "$SIGN_ID" ]; then
         | sed -E 's/^[[:space:]]*[0-9]+\) [0-9A-F]+ "([^"]+)".*/\1/' || true)"
 fi
 
-if [ -n "$SIGN_ID" ]; then
+# In STANDALONE mode the bundle carries ~150 nested Mach-O binaries, and
+# py2app/macholib leaves some with a dangling LC_CODE_SIGNATURE; a `--deep`
+# sign aborts on them ("main executable failed strict validation"). scripts/
+# release.sh re-signs the standalone bundle inside-out (and repairs corrupted
+# dylibs) immediately after this build, so signing here would be both redundant
+# and broken. Defer it. Alias mode still signs here: a stable identity is what
+# anchors the Accessibility (TCC) grant across reboots for the daily build.
+if [ "$BUILD_MODE" = "standalone" ]; then
+    echo "[build] standalone mode: deferring code signing to scripts/release.sh"
+    echo "        (inside-out hardened-runtime signing happens there)"
+elif [ -n "$SIGN_ID" ]; then
     echo "[build] signing bundle with identity: $SIGN_ID"
     ENTITLEMENTS="$ROOT/assets/SafeVoice.entitlements"
     codesign --force --deep --options runtime \
         --entitlements "$ENTITLEMENTS" \
         --sign "$SIGN_ID" "$APP"
+    echo "[build] verifying signature"
+    codesign -vv "$APP"
 else
     echo "[build] no Developer ID identity found; re-signing ad-hoc"
     echo "        (TCC grant will NOT survive reboot -- see SIGNING.md)"
     codesign --force --deep --sign - "$APP"
+    echo "[build] verifying signature"
+    codesign -vv "$APP"
 fi
-
-echo "[build] verifying signature"
-codesign -vv "$APP"
 
 # iCloud File Provider re-stamps com.apple.FinderInfo and fileprovider.fpfs#P
 # onto the bundle root within seconds. If the user opens the app after that

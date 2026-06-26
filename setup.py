@@ -46,6 +46,15 @@ OPTIONS = {
         "rumps",
         "numpy",
         "huggingface_hub",
+        # PIL and google (protobuf) are unused transitive deps of transformers,
+        # huggingface_hub, and mlx-lm. Without listing them here, py2app collects
+        # them INTO Contents/Resources/lib/pythonXY.zip along with their native
+        # binaries (google/_upb/*.so, PIL/.dylibs/*.dylib). Those cannot be
+        # imported from a zip and fail Apple notarization as unsigned. Forcing
+        # them on-disk, like every other binary package above, makes them
+        # signable and loadable.
+        "PIL",
+        "google",
         "objc",
         "AppKit",
         "Foundation",

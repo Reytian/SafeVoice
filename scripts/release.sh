@@ -56,9 +56,45 @@ echo "[release] stripping xattrs and signing inside-out (hardened runtime)"
 xattr -cr "$APP" 2>/dev/null || true
 
 # Sign nested dylibs / .so / frameworks first (deepest paths first).
+#
+# py2app/macholib sometimes rewrites a nested dylib's install-name load command
+# and leaves a dangling LC_CODE_SIGNATURE (the load command stays but its
+# signature data is gone/misplaced). codesign then refuses the file with "main
+# executable failed strict validation", and `codesign --remove-signature` errors
+# out too, so it cannot be repaired in place. We detect that case, replace the
+# file with a pristine copy of the same library from OUTSIDE the bundle
+# (preserving its install id), and sign that. liblzma.5.dylib is the known case.
+VENV_SITE="$("$VENV_PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])' 2>/dev/null || true)"
+
+sign_macho() {
+    local f="$1" base id clean
+    if codesign --force --timestamp --options runtime --sign "$SIGN_ID" "$f" \
+            2>/tmp/safevoice_cs.err; then
+        return 0
+    fi
+    if ! grep -q "failed strict validation" /tmp/safevoice_cs.err; then
+        cat /tmp/safevoice_cs.err >&2
+        return 1
+    fi
+    base="$(basename "$f")"
+    id="$(otool -D "$f" 2>/dev/null | tail -n +2 | head -1 || true)"
+    echo "[release] repairing macholib-corrupted nested binary: $base"
+    clean="$(find "$VENV_SITE" /opt/homebrew/lib /opt/homebrew/opt -name "$base" -type f 2>/dev/null \
+             | grep -vF "$APP/" | head -1 || true)"
+    if [ -z "$clean" ]; then
+        echo "[release] ERROR: no pristine source found for $base; cannot repair" >&2
+        return 1
+    fi
+    cp "$clean" "$f.fix"
+    chmod u+w "$f.fix"
+    [ -n "$id" ] && install_name_tool -id "$id" "$f.fix" 2>/dev/null || true
+    codesign --remove-signature "$f.fix" 2>/dev/null || true
+    mv -f "$f.fix" "$f"
+    codesign --force --timestamp --options runtime --sign "$SIGN_ID" "$f"
+}
+
 while IFS= read -r f; do
-    codesign --force --timestamp --options runtime \
-        --sign "$SIGN_ID" "$f"
+    sign_macho "$f"
 done < <(find "$APP/Contents" \( -name "*.dylib" -o -name "*.so" \) -type f | awk '{print length, $0}' | sort -rn | cut -d" " -f2-)
 
 # Sign nested frameworks (e.g. Python.framework) at their versioned root.
