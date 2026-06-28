@@ -265,3 +265,61 @@ def test_mlx_chat_uses_sampler_not_temp(monkeypatch):
     # generate_step signature -- exactly where generate() forwards them and
     # where `temp` blew up. Catches any future mlx_lm sampling-API drift.
     inspect.signature(generate_step).bind_partial(**kwargs)
+
+
+# --- Rule-R2 guard: model must echo a dictated question, not answer it -----
+
+def test_cleanup_rejects_answered_question_cjk():
+    """The reported WTO bug: a weak model turned a dictated Chinese question
+    into a fabricated statement-shaped answer. Reject and fall back."""
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(
+        reply="WTO中对于香烟、酒精等成瘾性产品没有特定的管制要求，各成员国可以自行决定其管控措施。"))
+    raw = "WTO中对于香烟、酒精等管制类产品，有什么样的要求"
+    out = llm.cleanup(raw)
+    # Rejected: output is the faithful (rule-stripped) question, not the
+    # invented answer.
+    assert "成瘾性" not in out
+    assert "什么" in out
+
+
+def test_cleanup_keeps_faithfully_echoed_question():
+    """A cleanup that keeps the question a question must pass through."""
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(
+        reply="WTO对于香烟、酒精等管制类产品有什么样的要求？"))
+    raw = "嗯WTO对于香烟酒精等管制类产品有什么样的要求"
+    out = llm.cleanup(raw)
+    assert out.endswith("？")
+    assert "成瘾" not in out
+
+
+def test_cleanup_rejects_answered_question_english():
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(
+        reply="The capital of France is Paris."))
+    raw = "what is the capital of France"
+    out = llm.cleanup(raw)
+    assert "Paris" not in out
+    assert "capital" in out.lower()
+
+
+def test_cleanup_statement_with_question_word_not_flagged():
+    """'什么' used as 'anything' (not interrogative) must not trip the guard
+    when the cleanup faithfully keeps it."""
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply="随便什么都行。"))
+    raw = "嗯随便什么都行"
+    out = llm.cleanup(raw)
+    assert out == "随便什么都行。"
+
+
+def test_is_question_helpers():
+    from src.llm_cleanup import _is_question, _answered_a_question
+    assert _is_question("有什么要求")
+    assert _is_question("what is this?")
+    assert _is_question("能不能帮我")
+    assert not _is_question("这是一个陈述句。")
+    assert not _is_question("I know what you mean.")
+    assert _answered_a_question("有什么要求", "没有特定要求。")
+    assert not _answered_a_question("有什么要求", "到底有什么要求？")

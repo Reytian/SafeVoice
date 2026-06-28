@@ -82,9 +82,10 @@ LOCAL_MODEL_INSTALL_HINTS = {
     "ollama": (
         "Run in Terminal: ollama pull <model_name>\n\n"
         "Recommended (instruction-tuned, good for dictation cleanup):\n"
-        "  ollama pull qwen2.5:3b      (1.9 GB, fast, strong CJK -- recommended)\n"
-        "  ollama pull qwen2.5:7b      (4.7 GB, higher quality)\n"
-        "  ollama pull qwen2.5:1.5b    (986 MB, smallest qwen)\n"
+        "  ollama pull qwen2.5:3b                  (1.9 GB, fast, strong CJK -- recommended)\n"
+        "  ollama pull qwen2.5:7b                  (4.7 GB, higher quality)\n"
+        "  ollama pull qwen2.5:7b-instruct-q3_K_M  (3.8 GB, 7B quality at ~1 GB less RAM)\n"
+        "  ollama pull qwen2.5:1.5b                (986 MB, smallest qwen)\n"
         "  ollama pull gemma3:4b       (3.3 GB, Google multilingual)\n"
         "  ollama pull gemma3:1b       (815 MB, tiny + fast)\n"
         "  ollama pull llama3.2:3b     (2.0 GB, English-strong)\n"

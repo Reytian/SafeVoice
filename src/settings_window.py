@@ -1663,8 +1663,11 @@ class SettingsWindow:
         # length guard in llm_cleanup.py would catch the bad output but the
         # user still pays the latency. Better to not offer them at all.
         _popular_models = [
-            "qwen2.5:3b",      # recommended: 1.9 GB, fast, strong CJK
-            "qwen2.5:7b",      # higher quality: 4.7 GB, ~2-3 s/call
+            "qwen2.5:3b",                  # recommended: 1.9 GB, fast, strong CJK
+            "qwen2.5:7b",                  # higher quality: 4.7 GB, ~2-3 s/call
+            "qwen2.5:7b-instruct-q3_K_M",  # 7B middle ground: ~3.8 GB, better
+                                           # instruction-following than 3B at
+                                           # ~1 GB less RAM than 7b (q4)
             "qwen2.5:1.5b",    # smallest qwen: 986 MB, very fast
             "gemma3:4b",       # Google, 3.3 GB, solid multilingual
             "gemma3:1b",       # tiny Google: 815 MB

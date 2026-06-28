@@ -241,6 +241,57 @@ def _mixed_script_collapsed(input_text: str, output_text: str) -> bool:
     return False
 
 
+# Interrogative cues, used to detect when the LLM "answered" a dictated
+# question instead of echoing it (system-prompt rule R2). A faithful cleanup
+# of a question stays a question: the user said "有什么要求" and wants exactly
+# that text pasted, not the model's answer. The takeover failure
+# ("WTO对管制类产品有什么要求" -> "WTO没有特定的管制要求，各成员国自行决定")
+# always strips every interrogative cue, because a statement-shaped answer has
+# none. So: input is a question, output is not -> the model took over. We then
+# fall back to the rule-stripped transcript, which is still the user's faithful
+# question, so a false positive only costs polish, never meaning.
+_CJK_QUESTION_MARKERS = (
+    "什么", "甚么", "怎么", "怎样", "如何", "为什么", "为何",
+    "多少", "是否", "有没有", "能不能", "可不可以", "要不要",
+    "是不是", "哪里", "哪个", "哪些", "几时", "何时", "吗", "呢",
+)
+_EN_QUESTION_WORDS = frozenset(
+    ("what", "how", "why", "where", "when", "who", "which", "whose", "whom")
+)
+_EN_QUESTION_OPENERS = (
+    "do you", "did you", "can you", "could you", "would you", "will you",
+    "is there", "are there", "is it", "are you", "have you", "should i",
+    "should we", "shall we", "may i",
+)
+
+
+def _is_question(text: str) -> bool:
+    """Best-effort: does this text read as a question?
+
+    Conservative on purpose. English wh-words only count when they lead the
+    clause ("I know what you mean" is not a question), but any ASCII/CJK '?'
+    or any Chinese interrogative particle counts anywhere.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    if stripped.endswith("?") or stripped.endswith("？"):
+        return True
+    if any(m in text for m in _CJK_QUESTION_MARKERS):
+        return True
+    lower = stripped.lower()
+    words = lower.split()
+    if words and words[0].strip(",.!\"'") in _EN_QUESTION_WORDS:
+        return True
+    return any(lower.startswith(opener) for opener in _EN_QUESTION_OPENERS)
+
+
+def _answered_a_question(input_text: str, output_text: str) -> bool:
+    """Detect the rule-R2 takeover: input is a question, output is a
+    statement-shaped answer that dropped every interrogative cue."""
+    return _is_question(input_text) and not _is_question(output_text)
+
+
 class LLMCleanup:
     """Cleans up raw ASR text using a pluggable LLM backend."""
 
@@ -425,6 +476,22 @@ class LLMCleanup:
                         "LLM cleanup rejected (over-deletion, no self-"
                         "correction marker in input): %s -> %s. Falling "
                         "back to rule-stripped text.",
+                        redact(raw_text), redact(cleaned),
+                    )
+                    return pre_cleaned
+                # Guard: reject the rule-R2 takeover. The user dictated a
+                # question to be pasted ("WTO对管制类产品有什么要求") and a
+                # weak model "helpfully" answered it instead of echoing it,
+                # inventing facts ("没有特定的管制要求") -- a hallucination,
+                # the worst failure. A faithful cleanup of a question stays a
+                # question; when the input is a question and the output lost
+                # every interrogative cue, the model took over. Fall back to
+                # the rule-stripped transcript (still the user's question).
+                if _answered_a_question(pre_cleaned, cleaned):
+                    logger.warning(
+                        "LLM cleanup rejected (answered a dictated question "
+                        "instead of echoing it): %s -> %s. Falling back to "
+                        "rule-stripped text.",
                         redact(raw_text), redact(cleaned),
                     )
                     return pre_cleaned
