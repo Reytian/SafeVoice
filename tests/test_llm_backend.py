@@ -340,7 +340,6 @@ def test_is_question_recognizes(text):
     "随便什么都行", "谁都知道这件事", "哪怕下雨也要去", "没什么问题", "他在吃饭呢",
     "然后呢我们走了", "不管怎么样我们都要完成", "不不不，我不是这个意思",
     "不是不是，我说的是另一个", "我想订三张票，不对不对，是四张",
-    "这样挺好的吗怎么说呢不用改",
     "do your homework", "Have a nice day", "should include the chart",
     "When you get a chance, send me the file", "我买了几本书",
 ])
@@ -365,6 +364,7 @@ _FAITHFUL_CLEANUPS = [
     # 吗 misheard for 嘛 (rule E5)
     ("这样就挺好的吗不用再改了", "这样就挺好的嘛，不用再改了。"),
     ("这样就挺好的吗，不用再改了", "这样就挺好的嘛，不用再改了。"),
+    ("这样挺好的吗怎么说呢不用改", "这样挺好的嘛，不用改。"),
     # Commands that only look like "do you ..." / "may I ..."
     ("do your homework first, sorry I mean do the dishes first", "Do the dishes first."),
     ("may is busy for me, I mean June is busy", "June is busy for me."),
@@ -609,3 +609,190 @@ def test_find_local_model_matches_exact_name_not_prefix():
     assert find_local_model(labels, "qwen2.5:7b-instruct-q3_K_M") == 0
     assert find_local_model(labels, "qwen3:4b") == 2
     assert find_local_model(labels, "gemma3:4b") is None
+
+
+# --- Final review before v0.1.1 ------------------------------------------
+# Every case below was confirmed against the merged code; most of the
+# answers were rejected before this guard's second version and slipped
+# through it.
+
+# Questions the detector missed, so their answers were pasted.
+_MISSED_ANSWERS = [
+    # 什么的 after a verb asks "what for" ("etc." only follows a noun)
+    ("这个按钮是干什么的", "这个按钮是用来保存文件的。"),
+    ("你们公司是做什么的", "我们公司是做软件开发的。"),
+    # A filler at the end of a sentence is the question itself
+    ("他的电话号码你知道吗", "他的电话号码是13800138000。"),
+    ("这个词用英文怎么说呢", "这个词用英文叫deadline。"),
+    ("那个什么时候能修好", "那个明天就能修好。"),
+    ("这批货里有多少有问题的", "这批货里有五件有问题的。"),
+    # Final 呢, and 吗 in unpunctuated run-on speech
+    ("那明天的会议呢", "明天的会议照常进行。"),
+    ("这个方案你们觉得呢", "我们觉得这个方案可以。"),
+    ("你现在觉得呢", "我现在觉得挺好的。"),
+    ("what I want to know is when you will arrive", "I will arrive at five."),
+    ("你今天去吗我们一起走", "我今天去，我们一起走。"),
+    ("我想问一下【明天放假吗】谢谢", "明天不放假。"),
+    # "No matter ..." covers only its own phrase, not the main clause
+    ("不管下不下雨你们什么时候出发", "不管下不下雨我们八点出发。"),
+    ("无论如何你明天到底来不来", "我明天一定来。"),
+    ("不管结果如何我们下一步该怎么办", "我们下一步应该继续推进。"),
+    ("where to go for dinner", "Go to the Italian place for dinner."),
+    ("when you have time can you review my PR",
+     "Sure, I'll review your PR when I have time."),
+    # The answer, then a chatbot follow-up question
+    ("WTO对管制类产品有什么要求", "WTO对管制类产品没有特定要求。还有其他问题吗？"),
+    ("what is the capital of France",
+     "The capital of France is Paris. Is there anything else?"),
+    ("what time is it", "In which time zone?"),
+    # The answer joined to the echoed question by a comma
+    ("明天几点开会", "明天几点开会，上午十点。"),
+    ("谁负责这个项目的预算", "谁负责这个项目的预算，张经理。"),
+    # A marker word inside the question, or a correction that still asks
+    ("会议应该是下午三点吗", "会议应该是下午三点。"),
+    ("你们是周五交付吗，等等，是周四交付吗", "你们是周四交付。"),
+    ("is it Tuesday, no wait, is it Wednesday", "It is Wednesday."),
+    ("你不是说明天放假吗", "明天放假。"),
+    # A final 吗 is a real question, not a misheard 嘛
+    ("明天开会吗", "明天开会嘛。"),
+    ("你们下周能交付吗", "你们下周能交付嘛。"),
+    # Yes/no questions about someone by name, and "has it happened yet?"
+    ("did Mark send the deck to the client", "Yes, Mark sent the deck to the client."),
+    ("does Sarah have the key to the office", "No, Sarah does not have the key to the office."),
+    ("合同签了没有", "合同已经签了。"),
+    ("你去过上海没有", "我去过上海。"),
+    ("能否在周五前完成这个报告", "可以在周五前完成这个报告。"),
+]
+
+
+@pytest.mark.parametrize("raw,answer", _MISSED_ANSWERS)
+def test_cleanup_rejects_answer_missed_by_first_guard(raw, answer):
+    from src.llm_cleanup import LLMCleanup
+    from src.text_postprocess import strip_filler_words
+    llm = LLMCleanup(backend=_FakeBackend(reply=answer))
+    assert llm.cleanup(raw) == strip_filler_words(raw)
+
+
+# Correct cleanups the guards rejected.
+_WRONGLY_REJECTED = [
+    ("who is coming mister smith and missus jones",
+     "Who is coming? Mr. Smith and Mrs. Jones."),
+    ("is the report ready doctor wang said it is late",
+     "Is the report ready? Dr. Wang said it is late."),
+    # Self-corrections with a small fix, in every spelling of the marker
+    ("can we meet Monday, sorry I mean, let's meet Tuesday", "Let's meet on Tuesday."),
+    ("is the meeting at three, no wait, it's at four", "It's at 4."),
+    ("我们是不是三点开会，啊不对，我们四点开会", "我们4点开会。"),
+    ("明天幾點開會，我是說我們後天開會", "我們後天開會。"),
+    ("我们是不是周五开会,不对,我们周六开会", "我们周六开会。"),
+    ("do we meet Tuesday no wait we do not meet this week", "We don't meet this week."),
+    # 那个啥 is a filler like 那个什么
+    ("那个啥我们明天再讨论这个方案吧", "我们明天再讨论这个方案吧。"),
+    ("那啥，我们明天再讨论这个方案吧", "我们明天再讨论这个方案吧。"),
+    ("what we need is more time", "We need more time."),
+    ("好我们开始吧", "好的，我们开始吧。"),
+    # The speaker's own yes/no opening is not a chatbot's reply
+    ("yeah I think so", "Yes, I think so."),
+    ("no we can't do that", "No, we can't do that."),
+    # Spoken numbers written as digits (rule E4)
+    ("the codes are one two three four five six", "The codes are 1, 2, 3, 4, 5, 6."),
+    ("房间号是一二三四五六", "房间号是1、2、3、4、5、6。"),
+]
+
+
+@pytest.mark.parametrize("raw,cleaned", _WRONGLY_REJECTED)
+def test_cleanup_keeps_correct_cleanup(raw, cleaned):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=cleaned))
+    assert llm.cleanup(raw) == cleaned
+
+
+def _mode(name):
+    from src.modes import DEFAULT_MODES, Mode, STYLE_PRESETS
+    if name == "Formal Writing":
+        return next(m for m in DEFAULT_MODES if m.name == name)
+    return Mode(name="Quick", prompt_template=STYLE_PRESETS[name])
+
+
+@pytest.mark.parametrize("mode,raw,polished", [
+    ("professional", "what's the status, the client's getting antsy",
+     "What is the status? The client is becoming impatient."),
+    ("professional", "我们是不是周五开会，啊不对，我们周六开会", "我们将于周六召开会议。"),
+    ("professional", "can we meet Friday, no wait, let's do Saturday",
+     "Let us meet on Saturday."),
+    # A professional rewording swaps most characters but adds nothing
+    ("professional", "这事儿我搞不定", "此事我无法完成"),
+    ("professional", "老板说这个活儿得赶紧弄完", "老板表示这项工作需要尽快完成"),
+    ("Formal Writing", "这玩意儿老是出毛病得赶紧修", "该设备经常出现故障，需要尽快维修。"),
+    ("Formal Writing", "can you send me the report by friday",
+     "Please send me the report by Friday."),
+    # The wizard's tone test sample
+    ("professional", "um so like I was thinking we should you know meet on Tuesday",
+     "I suggest we schedule a meeting for Tuesday."),
+    ("professional", "我们讨论了如何提高效率", "我们讨论了提高效率的方法。"),
+    # Dropping English fillers from mixed speech is not translation
+    ("professional", "okay so basically 我们下周要把这个方案做完", "我们下周需要把这个方案做完。"),
+    ("professional", "嗯 like 我觉得这个 design you know 还不错", "我觉得这个design还不错。"),
+    # Conditional inversion is not a question
+    ("professional", "should you have any questions feel free to reach out",
+     "If you have any questions, please feel free to reach out."),
+    ("professional", "had we known about the delay we would have planned differently",
+     "If we had known about the delay, we would have planned differently."),
+])
+def test_styled_path_keeps_polish(mode, raw, polished):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=polished))
+    assert _cleanup_like_app(llm, _mode(mode), raw) == polished
+
+
+@pytest.mark.parametrize("mode,raw,reply", [
+    ("professional", "what is the capital of France",
+     "What is the capital of France? Paris."),
+    ("professional", "remind me to call mom at five",
+     "Sure! I'll remind you to call your mom at 5."),
+])
+def test_styled_path_rejects(mode, raw, reply):
+    from src.llm_cleanup import LLMCleanup
+    from src.text_postprocess import strip_filler_words
+    llm = LLMCleanup(backend=_FakeBackend(reply=reply))
+    assert _cleanup_like_app(llm, _mode(mode), raw) == strip_filler_words(raw)
+
+
+def test_speculative_result_is_only_reused_by_the_same_mode():
+    """A speculative result made under one mode's prompt and guards (here a
+    translation) must not be pasted after switching to another mode."""
+    import time
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply="We meet on Saturday."))
+    text = "我们周六开会"
+    translate = f"Translate to English: {text}"
+    llm.speculative_cleanup(text, custom_prompt=translate, allow_script_change=True)
+    deadline = time.monotonic() + 5
+    while llm._speculative_result is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    formal = _mode("Formal Writing")
+    assert llm.get_speculative_result(
+        text, custom_prompt=formal.render_prompt(text),
+        allow_script_change=False, echo_questions=True) is None
+    assert llm.get_speculative_result(
+        text, custom_prompt=translate, allow_script_change=True) == "We meet on Saturday."
+
+
+def test_refresh_local_models_falls_back_to_saved_model(monkeypatch):
+    """Refreshing while the dropdown shows "(no models found)" must select
+    the saved model, not Ollama's first one, which Apply would then save."""
+    import types
+    from AppKit import NSPopUpButton
+    from Foundation import NSMakeRect
+    from src import settings_window
+    popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(0, 0, 200, 22), False)
+    popup.addItemWithTitle_("(no models found)")
+    monkeypatch.setattr(settings_window.OllamaBackend, "list_models",
+                        staticmethod(lambda *a, **k: ["qwen3:4b", "gemma3:4b", "qwen2.5:3b"]))
+    window = types.SimpleNamespace(
+        _local_model_popup=popup,
+        _mgr=types.SimpleNamespace(get=lambda key, default=None: "qwen2.5:3b"
+                                   if key == "llm_local_model" else default),
+    )
+    settings_window.SettingsWindow._refresh_local_models(window)
+    assert popup.titleOfSelectedItem() == "qwen2.5:3b"

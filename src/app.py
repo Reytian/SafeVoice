@@ -1070,8 +1070,14 @@ class SafeVoiceApp(rumps.App):
                         self._update_status(f"{self._active_mode.name}...")
                         prompt = self._active_mode.render_prompt(stripped)
                         logger.info("Mode '%s' LLM starting...", self._active_mode.name)
-                        # Check speculative cache first
-                        cached = self._llm.get_speculative_result(stripped)
+                        # Check speculative cache first. It only counts if it
+                        # was made with this mode's prompt and guards: the
+                        # mode may have changed since the speculative pass.
+                        cached = self._llm.get_speculative_result(
+                            stripped, custom_prompt=prompt,
+                            allow_script_change=self._mode_allows_translation(),
+                            echo_questions=self._mode_echoes_questions(),
+                        )
                         if cached:
                             logger.info("Using speculative result")
                             text = cached

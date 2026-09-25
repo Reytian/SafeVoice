@@ -2078,15 +2078,20 @@ class SettingsWindow:
                         local_model_label(m)
                     )
 
-            # Restore the selection by exact model name (see find_local_model)
-            if current_model:
-                titles = [
-                    self._local_model_popup.itemAtIndex_(i).title()
-                    for i in range(self._local_model_popup.numberOfItems())
-                ]
-                index = find_local_model(titles, current_model)
+            # Restore the selection by exact model name (see find_local_model).
+            # If the model shown before is gone, or was the "(no models
+            # found)" placeholder, fall back to the saved setting rather than
+            # leaving Ollama's first model selected for Apply to save.
+            titles = [
+                self._local_model_popup.itemAtIndex_(i).title()
+                for i in range(self._local_model_popup.numberOfItems())
+            ]
+            saved_model = self._mgr.get("llm_local_model", "qwen2.5:3b")
+            for wanted in (current_model, saved_model):
+                index = find_local_model(titles, wanted) if wanted else None
                 if index is not None:
                     self._local_model_popup.selectItemAtIndex_(index)
+                    break
 
     def _populate_cloud_models(self, provider):
         """Populate cloud model dropdown for the selected provider."""

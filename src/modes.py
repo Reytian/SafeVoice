@@ -45,6 +45,21 @@ STYLE_PRESETS = {
     ),
 }
 
+# Negations shared by the patterns below. 别 inside a word (分别, 区别,
+# 特别) is not "don't".
+_EN_NEG = r"(?:\b(?:not|never|no|without)|n['’]t)"
+_ZH_NEG = (
+    r"(?:不要|不用|不需要|无需|無需|无须|無須|不必|请勿|請勿|切勿|禁止|不得|勿"
+    r"|(?<![分区區特告派级級类類性识識辨差个個鉴鑑离離])[别別])"
+)
+# Words that may sit between a negation and its verb: "don't try to translate",
+# "do not ever translate", "no need to translate", "do not attempt any
+# translation". Content words don't ("not in English, translate").
+_EN_NEG_FILLER = (
+    r"(?:(?:try|attempt|need|have|bother|ever|even|to|any|a|an|the|do|make|provide"
+    r"|add|perform|offer|give|include|further|additional)\s+){0,2}"
+)
+
 # A prompt that mentions translating usually means the mode's job is to
 # translate. But the presets and Formal Writing say "Do NOT translate" (or
 # "Do NOT rephrase, summarize, or translate"), and a plain `"translat" in
@@ -54,26 +69,31 @@ STYLE_PRESETS = {
 _TRANSLATE_WORD_RE = re.compile(r"translat|翻[译譯]", re.IGNORECASE)
 _NEGATED_TRANSLATE_RES = (
     # "Do NOT translate", "never translate it", "don't try to translate",
-    # "no translation"
-    re.compile(
-        r"(?:\b(?:not|never|no|without|cannot)|n['’]t)\s+(?:\w+\s+){0,2}?translat\w*",
-        re.IGNORECASE,
-    ),
+    # "no translation" -- but not "don't explain, just translate".
+    re.compile(rf"{_EN_NEG}\s+{_EN_NEG_FILLER}translat\w*", re.IGNORECASE),
     # The last item of a negated list: "Do NOT rephrase, summarize, or translate"
     re.compile(
-        r"(?:\b(?:not|never|no|without|cannot)|n['’]t)\s+[\w\s,]*?\b(?:or|nor)\s+translat\w*",
+        rf"{_EN_NEG}\s+\w+(?:\s*,\s*\w+)*,?\s+(?:or|nor)\s+translat\w*",
         re.IGNORECASE,
     ),
     # Chinese: 不要翻译, 请勿翻译, 不翻译, 不要进行翻译
-    re.compile(
-        r"(?:不要|不用|不需要|无需|無需|无须|無須|请勿|請勿|切勿|禁止|不得|不必|别|別|勿|不)"
-        r"(?:进行|進行|做)?翻[译譯]"
-    ),
+    re.compile(rf"(?:{_ZH_NEG}|不)(?:进行|進行|做)?翻[译譯]"),
     # Chinese negated list: 不要改写、总结或翻译
-    re.compile(
-        r"(?:不要|不用|不需要|无需|無需|请勿|請勿|切勿|禁止|不得|别|別)"
-        r"[^。！？；\n]{0,20}?(?:或者?|和|及)翻[译譯]"
-    ),
+    re.compile(rf"{_ZH_NEG}[^。！？；\n]{{0,20}}?(?:或者?|和|及|、)翻[译譯]"),
+)
+# Negations that still leave a translation mode: a manner ("don't translate
+# literally", "不要逐字翻译") or an exception ("do not translate names",
+# "人名不要翻译") only makes sense when the mode translates.
+_QUALIFIED_TRANSLATE_RE = re.compile(
+    r"translat\w*\s+(?:it\s+|this\s+|them\s+)?(?:literally|word[\s-]+(?:for|by)[\s-]+word"
+    r"|verbatim|line[\s-]+by[\s-]+line|sentence[\s-]+by[\s-]+sentence)"
+    rf"|{_EN_NEG}\s+{_EN_NEG_FILLER}translat\w*\s+(?:the\s+|any\s+)?(?:names?|proper\s+nouns?"
+    r"|brand\s+names?|product\s+names?|(?:technical\s+)?terms?|terminology|jargon|code"
+    r"|identifiers?|acronyms?|abbreviations?|urls?|links?)\b"
+    r"|直[译譯]|逐字|逐句|字面(?:上的?)?翻[译譯]"
+    r"|(?:人名|名字|姓名|地名|术语|術語|专有名词|專有名詞|代码|代碼|品牌|产品名|產品名|缩写|縮寫)"
+    rf"[^，,。；;\n]{{0,4}}?(?:{_ZH_NEG}|不)(?:进行|進行)?翻[译譯]",
+    re.IGNORECASE,
 )
 
 # The presets and Formal Writing tell the model to transcribe a dictated
@@ -84,29 +104,70 @@ _NEGATED_TRANSLATE_RES = (
 _FORBID_ANSWER_RE = re.compile(
     # "do not respond to it", "do not answer or act on it", "don't answer
     # questions", "Do not answer." -- but not "do not respond with more
-    # than two sentences", which a mode that does answer might say.
-    r"(?:\b(?:not|never|cannot)|n['’]t)\s+(?:answer|respond|reply)(?:\s+to)?"
-    r"(?=\s*(?:[.!;,:]|$|(?:it|this|that|or|any|questions?|the\s+(?:text|input|questions?))\b))"
-    # 不要回答, 不要回复它, 请勿作答
-    r"|(?:不要|不用|别|別|勿|请勿|請勿|切勿|禁止|不得|不)(?:回答|回复|回覆|作答|答复|答覆)"
-    r"(?=[它这這该該问問或。，,.；;！!]|$)",
+    # than two sentences" or "if you can't answer it", which a mode that
+    # does answer might say.
+    r"(?:\b(?:not|never)|(?<!ca)n['’]t)\s+(?:answer|respond|reply)(?:\s+to)?"
+    r"(?=\s*(?:[.!;,:]|$|(?:it|this|that|them|or|any|anything|what|questions?|content"
+    r"|the\s+(?:text|input|content|speaker|questions?))\b))"
+    # 不要回答, 不要回复它, 请勿作答, 不要回答我的问题, 别回应
+    rf"|(?:{_ZH_NEG}|不)(?:回答|回复|回覆|作答|答复|答覆|回应|回應)"
+    r"(?=[它这這该該问問或我里裡里任其内內。，,.；;：:！!\s]|$)",
     re.IGNORECASE | re.MULTILINE,
+)
+# A mode whose job is to answer ("Answer the following question briefly. If
+# you can't answer it, say so") may still say "don't answer" somewhere.
+_ANSWER_TASK_RE = re.compile(
+    r"(?:^|[.!?。！？\n]\s*)(?:please\s+)?(?:answer|reply\s+to|respond\s+to)\s+"
+    r"(?:the|this|my|these|those|following|each|every|all|any|it|questions?|everything)\b"
+    r"|(?:^|[。！？\n])\s*(?:请|請)?(?:回答|解答)(?:下面|以下|下列|这个|這個|这些|這些|我的)",
+    re.IGNORECASE | re.MULTILINE,
+)
+# A mode that writes something new from the dictation (an email, a summary,
+# a tweet) is not transcribing it, even if its prompt says "do not answer".
+_WRITES_CONTENT_RE = re.compile(
+    r"\b(?:turn|convert|rewrite|transform|make)\s+(?:this|it|the\s+\w+|my\s+\w+|what\s+i\s+say)"
+    r"\s+(?:(?:in)?to|as)\s+(?:an?\s+)?(?:\w+\s+){0,3}?(?:email|e-mail|letter|message|tweet|post|summary"
+    r"|reply|response|story|poem|essay|report|list|outline|bullet)"
+    r"|\bsummari[sz]e\b|\b(?:write|draft|compose|generate)\s+(?:an?\s+|the\s+)?(?:\w+\s+){0,2}?"
+    r"(?:email|e-mail|letter|message|tweet|post|summary|reply|response|story|poem|essay|report)"
+    r"|改写成|改寫成|写成|寫成|转换成|轉換成|变成|變成|总结|總結|概括|摘要|起草|撰写|撰寫|生成",
+    re.IGNORECASE,
+)
+# Negated mentions the content check must skip ("do not paraphrase,
+# summarize, or add content", "不要总结").
+_NEGATED_VERB_RES = (
+    re.compile(rf"{_EN_NEG}\s+\w+(?:\s*,\s*\w+)*,?\s+(?:or|nor)\s+\w+", re.IGNORECASE),
+    re.compile(rf"{_EN_NEG}\s+{_EN_NEG_FILLER}\w+", re.IGNORECASE),
+    re.compile(rf"{_ZH_NEG}[^。！？；\n]{{0,20}}?(?:或者?|和|及|、)[一-鿿]{{1,4}}"),
+    re.compile(rf"(?:{_ZH_NEG}|不)(?:进行|進行|做)?[一-鿿]{{1,2}}"),
 )
 
 
 def prompt_requests_translation(template: str | None) -> bool:
     """True when a prompt asks for translation ("Translate to English: ...",
-    "翻译成英文"). Negated mentions ("Do NOT translate") don't count."""
+    "翻译成英文"). Negated mentions ("Do NOT translate") don't count, unless
+    they only qualify the translating ("don't translate names")."""
     if not template:
         return False
+    if _QUALIFIED_TRANSLATE_RE.search(template):
+        return True
     for pattern in _NEGATED_TRANSLATE_RES:
         template = pattern.sub(" ", template)
     return bool(_TRANSLATE_WORD_RE.search(template))
 
 
 def prompt_forbids_answers(template: str | None) -> bool:
-    """True when a prompt tells the model not to answer the dictated text."""
-    return bool(template) and bool(_FORBID_ANSWER_RE.search(template))
+    """True when a prompt tells the model not to answer the dictated text
+    and the mode transcribes it, rather than answering it or writing
+    something new from it."""
+    if not template or not _FORBID_ANSWER_RE.search(template):
+        return False
+    if _ANSWER_TASK_RE.search(template):
+        return False
+    stripped = template
+    for pattern in _NEGATED_VERB_RES:
+        stripped = pattern.sub(" ", stripped)
+    return not _WRITES_CONTENT_RE.search(stripped)
 
 
 @dataclass
