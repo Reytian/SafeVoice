@@ -56,21 +56,12 @@ from .llm_backend import (
     ASR_MODELS,
     CLOUD_LLM_MODELS,
     IMPLEMENTED_ASR_ENGINES,
+    find_local_model,
     find_ollama,
     is_asr_model_downloaded,
-    is_reasoning_model,
+    local_model_label,
+    local_model_name,
 )
-
-
-def _decorate_local_model_label(name: str) -> str:
-    """Append a '(not recommended)' suffix to reasoning-tuned models in
-    the dropdown so users can still see what's installed without being
-    silently steered to a model that produces 20-30 s of latency per
-    cleanup. The runtime guard in llm_cleanup.py still catches the bad
-    output, but warning here saves the user a confusing first run."""
-    if is_reasoning_model(name):
-        return f"{name}  (not recommended)"
-    return name
 
 
 # ---------------------------------------------------------------------------
@@ -1609,8 +1600,9 @@ class SettingsWindow:
             model_name = self._local_model_popup.titleOfSelectedItem()
             if not model_name or model_name.startswith("("):
                 return
-            # Extract just the model name (before size info)
-            model_name = model_name.split(" (")[0] if " (" in model_name else model_name
+            # Extract just the model name: "qwen3:4b  (not recommended)"
+            # must become "qwen3:4b", with no trailing space for `ollama rm`.
+            model_name = local_model_name(model_name)
             import subprocess
             self._ollama_dl_status.setStringValue_(f"Deleting {model_name}...")
             if hasattr(self, '_ollama_spinner') and self._ollama_spinner:
@@ -1652,8 +1644,10 @@ class SettingsWindow:
         dl_label = self._make_label("Download:", NSMakeRect(0, local_y, 65, 20), font_size=12.0)
         self._local_panel.addSubview_(dl_label)
 
+        # Wide enough for the longest entry ("qwen2.5:7b-instruct-q3_K_M"),
+        # so its "-q3_K_M" part stays visible when the popup is closed.
         self._ollama_dl_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(70, local_y, 155, 22), False)
+            NSMakeRect(70, local_y, 225, 22), False)
         # Curated list of instruction-tuned models suitable for dictation
         # cleanup. Reasoning-tuned models (qwen3:*, deepseek-r1:*, marco-o1,
         # any *-o1 / *-r1) are intentionally excluded — they dump 500-900
@@ -1679,7 +1673,7 @@ class SettingsWindow:
             self._ollama_dl_popup.addItemWithTitle_(m)
         self._local_panel.addSubview_(self._ollama_dl_popup)
 
-        dl_btn = NSButton.alloc().initWithFrame_(NSMakeRect(230, local_y, 70, 24))
+        dl_btn = NSButton.alloc().initWithFrame_(NSMakeRect(300, local_y, 70, 24))
         dl_btn.setTitle_("Pull")
         dl_btn.setBezelStyle_(1)  # NSBezelStyleRounded
         dl_btn.setFont_(NSFont.systemFontOfSize_(11.0))
@@ -1697,7 +1691,7 @@ class SettingsWindow:
             # Show spinner
             if not hasattr(self, '_ollama_spinner'):
                 from AppKit import NSProgressIndicator
-                self._ollama_spinner = NSProgressIndicator.alloc().initWithFrame_(NSMakeRect(230, local_y - 24, 16, 16))
+                self._ollama_spinner = NSProgressIndicator.alloc().initWithFrame_(NSMakeRect(300, local_y - 24, 16, 16))
                 self._ollama_spinner.setStyle_(1)  # spinning
                 self._ollama_spinner.setControlSize_(1)  # small
                 self._ollama_spinner.setDisplayedWhenStopped_(False)
@@ -2057,14 +2051,14 @@ class SettingsWindow:
         else:
             for m in models:
                 self._local_model_popup.addItemWithTitle_(
-                    _decorate_local_model_label(m)
+                    local_model_label(m)
                 )
-        # Select current setting (label may carry a "(not recommended)"
-        # suffix, so match by prefix instead of exact title).
+        # Select current setting by its exact label (which may carry a
+        # "(not recommended)" suffix).
         current = self._mgr.get("llm_local_model", "qwen2.5:3b")
         if current in models:
             self._local_model_popup.selectItemWithTitle_(
-                _decorate_local_model_label(current)
+                local_model_label(current)
             )
 
     def _refresh_local_models(self):
@@ -2072,7 +2066,7 @@ class SettingsWindow:
         if hasattr(self, '_local_model_popup') and self._local_model_popup:
             # Remember current selection
             current = self._local_model_popup.titleOfSelectedItem()
-            current_model = current.split(" (")[0] if current and " (" in current else current
+            current_model = local_model_name(current) if current else None
 
             self._local_model_popup.removeAllItems()
             models = OllamaBackend.list_models()
@@ -2081,16 +2075,18 @@ class SettingsWindow:
             else:
                 for m in models:
                     self._local_model_popup.addItemWithTitle_(
-                        _decorate_local_model_label(m)
+                        local_model_label(m)
                     )
 
-            # Restore selection
+            # Restore the selection by exact model name (see find_local_model)
             if current_model:
-                for i in range(self._local_model_popup.numberOfItems()):
-                    title = self._local_model_popup.itemAtIndex_(i).title()
-                    if title.startswith(current_model):
-                        self._local_model_popup.selectItemAtIndex_(i)
-                        break
+                titles = [
+                    self._local_model_popup.itemAtIndex_(i).title()
+                    for i in range(self._local_model_popup.numberOfItems())
+                ]
+                index = find_local_model(titles, current_model)
+                if index is not None:
+                    self._local_model_popup.selectItemAtIndex_(index)
 
     def _populate_cloud_models(self, provider):
         """Populate cloud model dropdown for the selected provider."""
@@ -2146,7 +2142,7 @@ class SettingsWindow:
             if model_title and model_title != "(no models found)":
                 # Strip any "(not recommended)" / "(size info)" suffix the
                 # dropdown decorator may have added before persisting.
-                model_id = model_title.split("  (")[0].split(" (")[0]
+                model_id = local_model_name(model_title)
                 self._mgr.set("llm_local_model", model_id)
         else:
             provider_title = self._cloud_provider_popup.titleOfSelectedItem()

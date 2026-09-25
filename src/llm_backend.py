@@ -78,25 +78,6 @@ OPENAI_COMPAT_PROVIDERS = {
     "deepseek": "https://api.deepseek.com/chat/completions",
 }
 
-LOCAL_MODEL_INSTALL_HINTS = {
-    "ollama": (
-        "Run in Terminal: ollama pull <model_name>\n\n"
-        "Recommended (instruction-tuned, good for dictation cleanup):\n"
-        "  ollama pull qwen2.5:3b                  (1.9 GB, fast, strong CJK -- recommended)\n"
-        "  ollama pull qwen2.5:7b                  (4.7 GB, higher quality)\n"
-        "  ollama pull qwen2.5:7b-instruct-q3_K_M  (3.8 GB, 7B quality at ~1 GB less RAM)\n"
-        "  ollama pull qwen2.5:1.5b                (986 MB, smallest qwen)\n"
-        "  ollama pull gemma3:4b       (3.3 GB, Google multilingual)\n"
-        "  ollama pull gemma3:1b       (815 MB, tiny + fast)\n"
-        "  ollama pull llama3.2:3b     (2.0 GB, English-strong)\n"
-        "  ollama pull phi4-mini       (2.5 GB, Microsoft multilingual)\n"
-        "  ollama pull mistral         (4.1 GB, classic all-rounder)\n\n"
-        "Avoid reasoning-tuned models (qwen3:*, deepseek-r1:*, marco-o1, qwq:*) "
-        "-- they dump 500-900 tokens of \"let me think...\" prose per cleanup, "
-        "adding 20-30 s latency for no benefit."
-    ),
-}
-
 # Reasoning-tuned model families. Excluded from the SafeVoice download
 # dropdown and warned-about if a user has one already installed and tries
 # to select it. The runaway-length guard in llm_cleanup.py is the runtime
@@ -114,6 +95,39 @@ def is_reasoning_model(model: str) -> bool:
     """Return True if the model name matches a known reasoning family."""
     name = (model or "").lower()
     return any(name.startswith(prefix) for prefix in KNOWN_REASONING_MODELS)
+
+
+def local_model_label(name: str) -> str:
+    """Settings dropdown label for an installed Ollama model.
+
+    Reasoning-tuned models get a '(not recommended)' suffix so users can
+    still see what's installed without being silently steered to a model
+    that produces 20-30 s of latency per cleanup. The runtime guard in
+    llm_cleanup.py still catches the bad output, but warning here saves the
+    user a confusing first run.
+    """
+    if is_reasoning_model(name):
+        return f"{name}  (not recommended)"
+    return name
+
+
+def local_model_name(label: str) -> str:
+    """The Ollama model name behind a dropdown label: the reverse of
+    local_model_label. Ollama model names never contain " ("."""
+    return label.split(" (")[0].strip()
+
+
+def find_local_model(labels: list, name: str) -> Optional[int]:
+    """Index of the dropdown label for exactly this model, or None.
+
+    Never match by prefix: "qwen2.5:7b" is a prefix of
+    "qwen2.5:7b-instruct-q3_K_M", and Ollama lists the newest model first,
+    so a prefix match would quietly select the wrong model.
+    """
+    for index, label in enumerate(labels):
+        if local_model_name(label) == name:
+            return index
+    return None
 
 
 # Compiled once: a complete reasoning block, and an unclosed trailing one.

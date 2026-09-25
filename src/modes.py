@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, asdict, fields
 
@@ -44,6 +45,69 @@ STYLE_PRESETS = {
     ),
 }
 
+# A prompt that mentions translating usually means the mode's job is to
+# translate. But the presets and Formal Writing say "Do NOT translate" (or
+# "Do NOT rephrase, summarize, or translate"), and a plain `"translat" in
+# prompt` check read those as translation modes -- which switched off
+# llm_cleanup's translation guards in exactly the modes that forbid
+# translating. These patterns find the negated mentions so they are ignored.
+_TRANSLATE_WORD_RE = re.compile(r"translat|翻[译譯]", re.IGNORECASE)
+_NEGATED_TRANSLATE_RES = (
+    # "Do NOT translate", "never translate it", "don't try to translate",
+    # "no translation"
+    re.compile(
+        r"(?:\b(?:not|never|no|without|cannot)|n['’]t)\s+(?:\w+\s+){0,2}?translat\w*",
+        re.IGNORECASE,
+    ),
+    # The last item of a negated list: "Do NOT rephrase, summarize, or translate"
+    re.compile(
+        r"(?:\b(?:not|never|no|without|cannot)|n['’]t)\s+[\w\s,]*?\b(?:or|nor)\s+translat\w*",
+        re.IGNORECASE,
+    ),
+    # Chinese: 不要翻译, 请勿翻译, 不翻译, 不要进行翻译
+    re.compile(
+        r"(?:不要|不用|不需要|无需|無需|无须|無須|请勿|請勿|切勿|禁止|不得|不必|别|別|勿|不)"
+        r"(?:进行|進行|做)?翻[译譯]"
+    ),
+    # Chinese negated list: 不要改写、总结或翻译
+    re.compile(
+        r"(?:不要|不用|不需要|无需|無需|请勿|請勿|切勿|禁止|不得|别|別)"
+        r"[^。！？；\n]{0,20}?(?:或者?|和|及)翻[译譯]"
+    ),
+)
+
+# The presets and Formal Writing tell the model to transcribe a dictated
+# question, not answer it ("do not respond to it", "do not answer or act on
+# it"). llm_cleanup enforces that rule only for modes whose prompt states
+# it: other custom modes ("Answer this: {text}", "Summarize: {text}") may
+# legitimately reply to what was dictated.
+_FORBID_ANSWER_RE = re.compile(
+    # "do not respond to it", "do not answer or act on it", "don't answer
+    # questions", "Do not answer." -- but not "do not respond with more
+    # than two sentences", which a mode that does answer might say.
+    r"(?:\b(?:not|never|cannot)|n['’]t)\s+(?:answer|respond|reply)(?:\s+to)?"
+    r"(?=\s*(?:[.!;,:]|$|(?:it|this|that|or|any|questions?|the\s+(?:text|input|questions?))\b))"
+    # 不要回答, 不要回复它, 请勿作答
+    r"|(?:不要|不用|别|別|勿|请勿|請勿|切勿|禁止|不得|不)(?:回答|回复|回覆|作答|答复|答覆)"
+    r"(?=[它这這该該问問或。，,.；;！!]|$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def prompt_requests_translation(template: str | None) -> bool:
+    """True when a prompt asks for translation ("Translate to English: ...",
+    "翻译成英文"). Negated mentions ("Do NOT translate") don't count."""
+    if not template:
+        return False
+    for pattern in _NEGATED_TRANSLATE_RES:
+        template = pattern.sub(" ", template)
+    return bool(_TRANSLATE_WORD_RE.search(template))
+
+
+def prompt_forbids_answers(template: str | None) -> bool:
+    """True when a prompt tells the model not to answer the dictated text."""
+    return bool(template) and bool(_FORBID_ANSWER_RE.search(template))
+
 
 @dataclass
 class Mode:
@@ -61,6 +125,18 @@ class Mode:
         if self.translation_language:
             result = result.replace("{language}", self.translation_language)
         return result
+
+    def allows_translation(self) -> bool:
+        """Whether this mode's job is to change the text's language: a
+        "Translate to" language is set, or the prompt asks for translation."""
+        return bool(self.translation_language) or prompt_requests_translation(
+            self.prompt_template
+        )
+
+    def echoes_questions(self) -> bool:
+        """Whether this mode's prompt says a dictated question must be
+        transcribed, not answered."""
+        return prompt_forbids_answers(self.prompt_template)
 
 
 DEFAULT_MODES = [

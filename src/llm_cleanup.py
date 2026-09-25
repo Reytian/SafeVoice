@@ -7,6 +7,7 @@ spoken text into clean, formal written text.
 import logging
 import re
 import threading
+from collections import Counter
 from typing import Optional
 
 from .llm_backend import LLMBackend, LLMTruncatedError, OllamaBackend
@@ -112,9 +113,9 @@ User: 明天开会的时候我们 review 一下 Q3 roadmap
 Assistant: 明天开会的时候我们review一下Q3 roadmap。"""
 
 
-_CJK_RE = re.compile(
-    r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]"
-)
+# Chinese (CJK unified + extension A), Japanese kana, Korean hangul.
+_CJK_RANGES = "\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af"
+_CJK_RE = re.compile(f"[{_CJK_RANGES}]")
 
 # Phrases the speaker might use to openly retract something they just said.
 # When any of these are present in the input, a large length drop in the
@@ -241,55 +242,211 @@ def _mixed_script_collapsed(input_text: str, output_text: str) -> bool:
     return False
 
 
-# Interrogative cues, used to detect when the LLM "answered" a dictated
-# question instead of echoing it (system-prompt rule R2). A faithful cleanup
-# of a question stays a question: the user said "有什么要求" and wants exactly
-# that text pasted, not the model's answer. The takeover failure
-# ("WTO对管制类产品有什么要求" -> "WTO没有特定的管制要求，各成员国自行决定")
-# always strips every interrogative cue, because a statement-shaped answer has
-# none. So: input is a question, output is not -> the model took over. We then
-# fall back to the rule-stripped transcript, which is still the user's faithful
-# question, so a false positive only costs polish, never meaning.
-_CJK_QUESTION_MARKERS = (
-    "什么", "甚么", "怎么", "怎样", "如何", "为什么", "为何",
-    "多少", "是否", "有没有", "能不能", "可不可以", "要不要",
-    "是不是", "哪里", "哪个", "哪些", "几时", "何时", "吗", "呢",
+# ---------------------------------------------------------------------------
+# Rule R2 guard: a dictated question must be echoed, never answered.
+#
+# The reported bug: the user dictated "WTO对管制类产品有什么要求" and a weak
+# model pasted an invented answer ("WTO没有特定的管制要求，各成员国自行决定").
+# An answer takes one of two shapes, and _answered_a_question() checks both:
+#   1. The question turned into a statement:
+#        "明天几点开会" -> "明天上午十点开会。"
+#   2. The question is still there, but next to it sits a statement made of
+#      words the speaker never said:
+#        "What is the capital of France?" -> "What is the capital of France? Paris."
+#        "...有什么要求" -> "...没有特定要求，各成员国自行决定。您还有其他问题吗？"
+# Both checks rest on one fact: a faithful cleanup only deletes and fixes the
+# speaker's words, while an answer has to say something new.
+# ---------------------------------------------------------------------------
+
+# Chinese question words (Simplified, Traditional and Cantonese). They count
+# anywhere in a sentence, except inside a _CJK_NOT_A_QUESTION_RE phrase.
+# Bare 几 is left out on purpose: "几本书" usually means "a few books".
+_CJK_QUESTION_WORDS = (
+    "什么", "什麼", "甚么", "甚麼", "啥", "干吗", "干嘛", "幹嘛",
+    "怎么", "怎麼", "怎样", "怎樣", "咋", "如何",
+    "为什么", "為什麼", "为何", "為何", "为啥", "為啥",
+    "谁", "誰", "哪", "何时", "何時", "是否",
+    "多少", "多久", "几点", "幾點", "几号", "幾號", "几岁", "幾歲", "几时", "幾時",
+    "星期几", "星期幾", "周几", "週幾", "礼拜几", "禮拜幾",
+    # Cantonese
+    "咩", "乜", "点样", "點樣", "点解", "點解", "边个", "邊個", "边度", "邊度",
+    "几多", "幾多", "系咪", "係咪", "有冇",
 )
+# "A-not-A" questions work with any verb: 是不是, 去不去, 有没有, 可不可以,
+# 喜欢不喜欢. The lookarounds skip repeated denials: 不不不, 不是不是 and
+# 不对不对 all mean "no, no".
+_CJK_A_NOT_A_RE = re.compile(
+    rf"(?<![不没沒])(?![不没沒])([{_CJK_RANGES}]{{1,2}})[不没沒]\1"
+)
+
+# Phrases where a question word isn't asking anything. They are blanked out
+# before looking for question words.
+_CJK_NOT_A_QUESTION_RE = re.compile("|".join((
+    # Spoken fillers the model is told to remove (rule E2): 怎么说呢 ("how
+    # to put it"), 你知道吗 ("you know"), 那个什么 ("um, that thing").
+    "怎[么麼][说說讲講]呢", "你知道[吗嗎]", "那[个個]什[么麼]",
+    # "Any-" readings: 什么都行 (anything is fine), 没什么 (nothing), 谁都知道
+    # (everyone knows), 哪儿都行 (anywhere), 哪怕 (even if), 不怎么好 (not
+    # very good), 没多久 (soon after). The lookbehinds keep real questions
+    # intact: 为什么都不说 ("why won't anyone speak"), 有没有什么问题.
+    "(?<![为為])什[么麼][都也的]", "(?<![为為])啥[都也]", "(?<!有)[没沒]有?什[么麼]",
+    "(?<!有)[没沒]啥", "[谁誰][都也]", "哪怕", "哪(?:儿|兒|里|裡)?都", "不怎[么麼]",
+    "怎[么麼]都(?:行|可以|好|成)", "多少有", "[没沒]多[少久]", "不咋",
+    # 无论/不管 + question word means "no matter what/who/how": drop the clause.
+    "(?:无论|無論|不管|不论|不論)[^，,。！？!?；;]*",
+)))
+
+# 吗 asks a question where a clause ends ("你今天去吗", "去吗，我想知道").
+# Mid-clause it is usually a misheard 嘛 ("这样就挺好的吗不用再改了").
+# 呢 is left out: it is as often a pause ("我呢觉得", "然后呢我们") or an
+# aspect particle ("他在吃饭呢") as a question.
+_CJK_QUESTION_PARTICLE_RE = re.compile(
+    r"[吗嗎](?=[\s，,、；;：:。.！？!?…\"'”’」』）)]|$)"
+)
+
 _EN_QUESTION_WORDS = frozenset(
     ("what", "how", "why", "where", "when", "who", "which", "whose", "whom")
 )
-_EN_QUESTION_OPENERS = (
-    "do you", "did you", "can you", "could you", "would you", "will you",
-    "is there", "are there", "is it", "are you", "have you", "should i",
-    "should we", "shall we", "may i",
-)
+_EN_AUXILIARIES = frozenset((
+    "am", "is", "are", "was", "were", "do", "does", "did", "have", "has", "had",
+    "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+    "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't",
+    "haven't", "hasn't", "hadn't", "can't", "couldn't", "won't", "wouldn't",
+    "shouldn't",
+))
+# Words that can follow an auxiliary to make it a question ("does the store",
+# "is this", "can I"). Anything else is a statement: "should include...".
+_EN_SUBJECTS = frozenset((
+    "i", "you", "we", "they", "he", "she", "it", "this", "that", "these",
+    "those", "there", "the", "a", "an", "my", "your", "our", "their", "his",
+    "her", "its", "any", "anyone", "anybody", "anything", "someone",
+    "somebody", "something", "everyone", "everybody", "everything",
+))
+# "do" and "have" also start commands ("Do the dishes", "Have a nice day"),
+# so for them only a personal pronoun makes a question ("Do you...").
+_EN_COMMAND_AUXILIARIES = frozenset(("do", "don't", "have"))
+_EN_PERSONAL_PRONOUNS = frozenset(("i", "you", "we", "they"))
+# Words people say before a question: "so what's next", "OK, can you...".
+_EN_LEAD_INS = frozenset((
+    "so", "and", "but", "ok", "okay", "well", "also", "then", "hey", "oh",
+    "now", "anyway", "alright", "right", "please",
+))
+_EN_WORD_RE = re.compile(r"[a-z]+(?:'[a-z]+)?")
+
+_QUESTION_MARKS = ("?", "？", "؟")
+# Looked past when checking whether a sentence ends in a question mark:
+# closing quotes and brackets ('“What time is it?”'), and "!" in "Really?!".
+_SENTENCE_CLOSERS = " \t\"'”’」』）)】]!！"
+# One sentence: text up to a terminator (。！？!?؟；; or a line break), or up
+# to an ASCII period followed by a space or the end ("3.5" stays whole).
+_SENTENCE_RE = re.compile(r"[^。！？!?؟；;\n]*?(?:[。！？!?؟；;\n]+|\.(?=\s|$)|$)")
+# Content units for comparing input and output: each CJK character on its
+# own (Chinese has no spaces between words) and whole words in every other
+# script. Punctuation and spacing don't count.
+_UNIT_RE = re.compile(rf"[{_CJK_RANGES}]|[^\W_{_CJK_RANGES}]+")
+
+
+def _sentences(text: str) -> list:
+    """Split text into sentences, each keeping its end punctuation."""
+    return [s for s in _SENTENCE_RE.findall(text) if s.strip()]
+
+
+def _content_units(text: str) -> Counter:
+    """Count the content units (CJK characters, other words) in text."""
+    return Counter(unit.lower() for unit in _UNIT_RE.findall(text))
+
+
+def _english_question(sentence: str) -> bool:
+    """Does this sentence open like an English question? ("what's...",
+    "does the store...", "can I...", "OK so how...")"""
+    # Only English text at the very start of the sentence counts.
+    lead = _CJK_RE.split(sentence, maxsplit=1)[0]
+    words = _EN_WORD_RE.findall(lead.lower().replace("’", "'"))
+    while words and words[0] in _EN_LEAD_INS:
+        words.pop(0)
+    if not words:
+        return False
+    first = words[0]
+    after = words[1] if len(words) > 1 else ""
+    wh_word = first.split("'")[0]  # "what's" -> "what"
+    if wh_word in _EN_QUESTION_WORDS:
+        # "when is it?" and "where's the file?" ask; "when you get a chance,
+        # send it" and "where we left off" only set the scene.
+        if wh_word in ("when", "where") and first == wh_word:
+            return after in _EN_AUXILIARIES
+        return True
+    if first in _EN_COMMAND_AUXILIARIES:
+        return after in _EN_PERSONAL_PRONOUNS
+    return first in _EN_AUXILIARIES and after in _EN_SUBJECTS
+
+
+def _sentence_is_question(sentence: str) -> bool:
+    """Does this one sentence ask a question?"""
+    stripped = sentence.strip().rstrip(_SENTENCE_CLOSERS)
+    if stripped.endswith(_QUESTION_MARKS) or "¿" in stripped:
+        return True
+    chinese = _CJK_NOT_A_QUESTION_RE.sub("", stripped)
+    if any(word in chinese for word in _CJK_QUESTION_WORDS):
+        return True
+    if _CJK_A_NOT_A_RE.search(chinese) or _CJK_QUESTION_PARTICLE_RE.search(chinese):
+        return True
+    return _english_question(stripped)
 
 
 def _is_question(text: str) -> bool:
-    """Best-effort: does this text read as a question?
+    """Best-effort: does any sentence of this text ask a question?
 
-    Conservative on purpose. English wh-words only count when they lead the
-    clause ("I know what you mean" is not a question), but any ASCII/CJK '?'
-    or any Chinese interrogative particle counts anywhere.
+    Counts a final ?, ？ or ؟ (looking past closing quotes), Chinese question
+    words anywhere in a sentence (but not fillers like 怎么说呢 or "any-"
+    readings like 什么都行), 吗 where a clause ends, and English sentences
+    that open like a question. "I know what you mean" is not a question.
     """
-    if not text:
+    return any(_sentence_is_question(s) for s in _sentences(text or ""))
+
+
+def _question_became_statement(input_text: str, output_text: str) -> bool:
+    """Answer shape 1: the output no longer asks anything, and no legitimate
+    edit explains why."""
+    if _is_question(output_text):
         return False
-    stripped = text.strip()
-    if stripped.endswith("?") or stripped.endswith("？"):
-        return True
-    if any(m in text for m in _CJK_QUESTION_MARKERS):
-        return True
-    lower = stripped.lower()
-    words = lower.split()
-    if words and words[0].strip(",.!\"'") in _EN_QUESTION_WORDS:
-        return True
-    return any(lower.startswith(opener) for opener in _EN_QUESTION_OPENERS)
+    added = _content_units(output_text) - _content_units(input_text)
+    # A self-correction can retract the question ("我们是不是周五开会，啊不对，
+    # 我们周六开会" -> "我们周六开会。"). A retraction only deletes words; an
+    # answer ("后天上午十点开会") always adds some.
+    if _has_correction_marker(input_text) and not added:
+        return False
+    # Fixing a misheard 嘛 ("这样就挺好的吗，不用再改了" -> "这样就挺好的嘛，
+    # 不用再改了。") removes the question cue without saying anything new.
+    as_emphasis = input_text.replace("吗", "嘛").replace("嗎", "嘛")
+    if "嘛" in output_text and set(added) <= {"嘛"} and not _is_question(as_emphasis):
+        return False
+    return True
+
+
+def _answer_beside_question(input_text: str, output_text: str) -> bool:
+    """Answer shape 2: the output still asks the question, but one of its
+    statements is mostly words the speaker never said."""
+    # The speaker's words the output hasn't used yet. Counting uses stops an
+    # answer that repeats the question ("What is X? The capital of France is
+    # Paris.") from hiding behind words the echo already used.
+    unused = _content_units(input_text)
+    for sentence in _sentences(output_text):
+        units = _content_units(sentence)
+        if not _sentence_is_question(sentence):
+            new_words = sum((units - unused).values())
+            if new_words * 2 > sum(units.values()):
+                return True
+        unused -= units
+    return False
 
 
 def _answered_a_question(input_text: str, output_text: str) -> bool:
-    """Detect the rule-R2 takeover: input is a question, output is a
-    statement-shaped answer that dropped every interrogative cue."""
-    return _is_question(input_text) and not _is_question(output_text)
+    """Detect the rule-R2 takeover: the speaker dictated a question and the
+    model answered it instead of echoing it."""
+    if not _is_question(input_text):
+        return False
+    return (_question_became_statement(input_text, output_text)
+            or _answer_beside_question(input_text, output_text))
 
 
 class LLMCleanup:
@@ -316,12 +473,14 @@ class LLMCleanup:
         self._backend.warm_up()
 
     def speculative_cleanup(self, text: str, custom_prompt: str = None,
-                            allow_script_change: bool = False):
+                            allow_script_change: bool = False,
+                            echo_questions: bool = False):
         """Fire-and-forget: run cleanup in background, cache result."""
         def _run():
             result = self.cleanup(
                 text, custom_prompt=custom_prompt,
                 allow_script_change=allow_script_change,
+                echo_questions=echo_questions,
             )
             with self._speculative_lock:
                 self._speculative_input = text
@@ -346,7 +505,8 @@ class LLMCleanup:
 
     def cleanup(self, raw_text: str, languages: Optional[list] = None,
                 custom_prompt: str = None,
-                allow_script_change: bool = False) -> str:
+                allow_script_change: bool = False,
+                echo_questions: bool = False) -> str:
         """Clean up raw ASR text using the LLM.
 
         Args:
@@ -361,6 +521,11 @@ class LLMCleanup:
                 change the language (e.g. translation modes). When False, a
                 custom-prompt result that flips the script (Chinese in,
                 English out) is rejected as model misbehavior.
+            echo_questions: Custom-prompt path only. Set True when the mode's
+                prompt says a dictated question must be transcribed, not
+                answered (the style presets and Formal Writing do). A result
+                that answers the question is then rejected, exactly as on the
+                default path, which always checks this.
 
         Returns the cleaned text, or the original text if cleanup fails.
         """
@@ -410,6 +575,21 @@ class LLMCleanup:
                             "Custom LLM cleanup rejected (unrequested "
                             "translation/script change). Falling back to "
                             "rule-stripped text.",
+                        )
+                        return pre_cleaned
+                    # Same rule-R2 guard as the default path, for modes whose
+                    # prompt forbids answering. That covers Quick mode after
+                    # the first-run wizard, which saves a style preset into
+                    # it. Translation modes skip it: the guard compares the
+                    # output's words with the speaker's, and a translation
+                    # replaces all of them.
+                    if (echo_questions and not allow_script_change
+                            and _answered_a_question(pre_cleaned, result)):
+                        logger.warning(
+                            "Custom LLM cleanup rejected (answered a dictated "
+                            "question instead of echoing it): %s -> %s. "
+                            "Falling back to rule-stripped text.",
+                            redact(raw_text), redact(result),
                         )
                         return pre_cleaned
                     logger.info("Custom LLM: %s -> %s", redact(raw_text), redact(result))
@@ -483,10 +663,9 @@ class LLMCleanup:
                 # question to be pasted ("WTO对管制类产品有什么要求") and a
                 # weak model "helpfully" answered it instead of echoing it,
                 # inventing facts ("没有特定的管制要求") -- a hallucination,
-                # the worst failure. A faithful cleanup of a question stays a
-                # question; when the input is a question and the output lost
-                # every interrogative cue, the model took over. Fall back to
-                # the rule-stripped transcript (still the user's question).
+                # the worst failure. See _answered_a_question for the two
+                # shapes an answer takes. Fall back to the rule-stripped
+                # transcript (still the user's question).
                 if _answered_a_question(pre_cleaned, cleaned):
                     logger.warning(
                         "LLM cleanup rejected (answered a dictated question "

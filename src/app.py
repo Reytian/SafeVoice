@@ -1083,6 +1083,7 @@ class SafeVoiceApp(rumps.App):
                             text = self._llm.cleanup(
                                 text, custom_prompt=prompt,
                                 allow_script_change=self._mode_allows_translation(),
+                                echo_questions=self._mode_echoes_questions(),
                             )
                         self._overlay.update_text(text)
                         logger.info("Mode result: %s", redact(text))
@@ -1176,12 +1177,15 @@ class SafeVoiceApp(rumps.App):
         the user's Chinese with English under a "make it formal" prompt.
         """
         mode = self._active_mode
-        if mode is None:
-            return False
-        if mode.translation_language:
-            return True
-        template = (mode.prompt_template or "").lower()
-        return "translat" in template or "翻译" in template
+        return mode is not None and mode.allows_translation()
+
+    def _mode_echoes_questions(self) -> bool:
+        """Whether the active mode's prompt says a dictated question must be
+        transcribed, not answered (the style presets and Formal Writing do),
+        so llm_cleanup rejects a result that answers it instead.
+        """
+        mode = self._active_mode
+        return mode is not None and mode.echoes_questions()
 
     # Below this RMS peak the stream is effectively digital silence (muted
     # mic, denied permission, dead device); normal quiet speech sits well
@@ -1235,6 +1239,7 @@ class SafeVoiceApp(rumps.App):
                         self._llm.speculative_cleanup(
                             text.strip(), custom_prompt=prompt,
                             allow_script_change=self._mode_allows_translation(),
+                            echo_questions=self._mode_echoes_questions(),
                         )
                 except Exception as e:
                     logger.debug("Speculative ASR failed: %s", e)

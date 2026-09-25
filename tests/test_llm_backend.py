@@ -305,13 +305,13 @@ def test_cleanup_rejects_answered_question_english():
 
 
 def test_cleanup_statement_with_question_word_not_flagged():
-    """'什么' used as 'anything' (not interrogative) must not trip the guard
-    when the cleanup faithfully keeps it."""
-    from src.llm_cleanup import LLMCleanup
-    llm = LLMCleanup(backend=_FakeBackend(reply="随便什么都行。"))
-    raw = "嗯随便什么都行"
-    out = llm.cleanup(raw)
-    assert out == "随便什么都行。"
+    """什么 as "anything" (随便什么都行) or in a filler (那个什么) is not a
+    question, so the guard must accept a cleanup that drops it."""
+    from src.llm_cleanup import LLMCleanup, _is_question
+    assert not _is_question("随便什么都行")
+    llm = LLMCleanup(backend=_FakeBackend(reply="我们下周再讨论这个方案吧。"))
+    out = llm.cleanup("我们那个什么下周再讨论这个方案吧")
+    assert out == "我们下周再讨论这个方案吧。"
 
 
 def test_is_question_helpers():
@@ -323,3 +323,174 @@ def test_is_question_helpers():
     assert not _is_question("I know what you mean.")
     assert _answered_a_question("有什么要求", "没有特定要求。")
     assert not _answered_a_question("有什么要求", "到底有什么要求？")
+
+
+@pytest.mark.parametrize("text", [
+    "有没有什么问题", "你去不去", "明天星期几", "你今天去吗", "谁来开会",
+    "哪个方案更好", "为什么都不说话", "WTO對管制類產品有什麼要求", "你幾時返嚟",
+    "what's the plan", "OK so how do we fix it", "does the store open on Sunday",
+    "Can I leave early", "Where's the file", "“Is it done?”", "ما هي عاصمة فرنسا؟",
+])
+def test_is_question_recognizes(text):
+    from src.llm_cleanup import _is_question
+    assert _is_question(text)
+
+
+@pytest.mark.parametrize("text", [
+    "随便什么都行", "谁都知道这件事", "哪怕下雨也要去", "没什么问题", "他在吃饭呢",
+    "然后呢我们走了", "不管怎么样我们都要完成", "不不不，我不是这个意思",
+    "不是不是，我说的是另一个", "我想订三张票，不对不对，是四张",
+    "这样挺好的吗怎么说呢不用改",
+    "do your homework", "Have a nice day", "should include the chart",
+    "When you get a chance, send me the file", "我买了几本书",
+])
+def test_is_question_ignores_statements(text):
+    from src.llm_cleanup import _is_question
+    assert not _is_question(text)
+
+
+# Correct cleanups the guard must accept. The first version of the guard
+# rejected all but the last one, mistaking a dropped or changed question cue
+# for an answer.
+_FAITHFUL_CLEANUPS = [
+    # Self-corrections that retract a question (rule E4)
+    ("我们是不是周五开会，啊不对，我们周六开会", "我们周六开会。"),
+    ("is it Tuesday, no wait, it's Wednesday", "It's Wednesday."),
+    ("can you send it Monday, sorry I mean, send it Tuesday", "Send it Tuesday."),
+    # Fillers the model is told to remove (rule E2)
+    ("然后呢我们去超市买了一些水果和蔬菜", "我们去超市买了一些水果和蔬菜。"),
+    ("这个方案，怎么说呢，还不太成熟需要再改改", "这个方案还不太成熟，需要再改改。"),
+    ("这个项目你知道吗其实很难做完", "这个项目其实很难做完。"),
+    ("我呢觉得这个方案还不错可以试试", "我觉得这个方案还不错，可以试试。"),
+    # 吗 misheard for 嘛 (rule E5)
+    ("这样就挺好的吗不用再改了", "这样就挺好的嘛，不用再改了。"),
+    ("这样就挺好的吗，不用再改了", "这样就挺好的嘛，不用再改了。"),
+    # Commands that only look like "do you ..." / "may I ..."
+    ("do your homework first, sorry I mean do the dishes first", "Do the dishes first."),
+    ("may is busy for me, I mean June is busy", "June is busy for me."),
+    # A faithful echo wrapped in curly quotes
+    ("what time is the meeting tomorrow", "“What time is the meeting tomorrow?”"),
+    # A question followed by the speaker's own statement, not an answer
+    ("what time is the meeting I need to know by tonight",
+     "What time is the meeting? I need to know by tonight."),
+]
+
+
+@pytest.mark.parametrize("raw,cleaned", _FAITHFUL_CLEANUPS)
+def test_cleanup_keeps_faithful_cleanup(raw, cleaned):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=cleaned))
+    assert llm.cleanup(raw) == cleaned
+
+
+# Answers the guard must reject. The first version of the guard let every
+# one of these through.
+_ANSWERS = [
+    # The answer reuses the question word (有什么 -> 没有什么)
+    ("WTO对管制类产品有什么要求", "WTO对管制类产品没有什么统一要求，各成员国自行决定。"),
+    # An answer followed by a chatbot follow-up question
+    ("WTO对管制类产品有什么要求",
+     "WTO没有特定的管制要求，各成员国自行决定。您还有其他问题吗？"),
+    # The question echoed, then answered
+    ("what is the capital of France", "What is the capital of France? Paris."),
+    ("what is the capital of France",
+     "What is the capital of France? The capital of France is Paris."),
+    # Question words and forms the first word list missed
+    ("明天几点开会", "明天上午十点开会。"),
+    ("谁负责这个项目的预算", "张经理负责这个项目的预算。"),
+    ("你现在在哪儿呀", "我现在在公司。"),
+    ("你明天来不来", "我明天来。"),
+    # Traditional Chinese and Cantonese
+    ("WTO對管制類產品有什麼要求", "WTO對管制類產品沒有特定要求，各成員國自行決定。"),
+    ("你幾時返嚟", "我聽日返嚟。"),
+    # English questions that don't open with a bare wh-word
+    ("what's the capital of France", "The capital of France is Paris."),
+    ("does the store open on Sunday", "Yes, the store opens at 10 AM on Sunday."),
+    ("I have a question. what is the deadline for the report",
+     "I have a question. The deadline for the report is Friday."),
+    # Arabic question mark
+    ("ما هي عاصمة فرنسا؟", "عاصمة فرنسا هي باريس."),
+]
+
+
+@pytest.mark.parametrize("raw,answer", _ANSWERS)
+def test_cleanup_rejects_answer(raw, answer, caplog):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=answer))
+    out = llm.cleanup(raw)
+    assert out == raw  # fell back to the speaker's own words
+    assert "answered a dictated question" in caplog.text
+
+
+# --- Rule-R2 guard on the custom-prompt path ------------------------------
+
+def _cleanup_like_app(llm, mode, raw):
+    """Call cleanup() the way app.py does for a mode with a prompt."""
+    return llm.cleanup(
+        raw, custom_prompt=mode.render_prompt(raw),
+        allow_script_change=mode.allows_translation(),
+        echo_questions=mode.echoes_questions(),
+    )
+
+
+def test_custom_path_rejects_answered_question():
+    """After the first-run wizard, Quick mode holds a style preset and runs
+    through the custom-prompt path. The WTO answer must be rejected there."""
+    from src.llm_cleanup import LLMCleanup
+    from src.modes import Mode, STYLE_PRESETS
+    mode = Mode(name="Quick", prompt_template=STYLE_PRESETS["professional"])
+    llm = LLMCleanup(backend=_FakeBackend(
+        reply="WTO中对于香烟、酒精等成瘾性产品没有特定的管制要求，各成员国可以自行决定其管控措施。"))
+    raw = "WTO中对于香烟、酒精等管制类产品，有什么样的要求"
+    assert _cleanup_like_app(llm, mode, raw) == raw
+
+
+def test_custom_path_formal_writing_rejects_answer():
+    from src.llm_cleanup import LLMCleanup
+    from src.modes import DEFAULT_MODES
+    mode = next(m for m in DEFAULT_MODES if m.name == "Formal Writing")
+    llm = LLMCleanup(backend=_FakeBackend(reply="The capital of France is Paris."))
+    raw = "what is the capital of France"
+    assert _cleanup_like_app(llm, mode, raw) == raw
+
+
+def test_custom_path_keeps_answer_when_mode_asks_for_one():
+    """A user's own "answer this" mode may reply to a dictated question."""
+    from src.llm_cleanup import LLMCleanup
+    from src.modes import Mode
+    mode = Mode(name="Ask", prompt_template="Answer this question briefly: {text}")
+    llm = LLMCleanup(backend=_FakeBackend(reply="Paris."))
+    assert _cleanup_like_app(llm, mode, "what is the capital of France") == "Paris."
+
+
+def test_custom_path_translation_skips_question_guard():
+    """A translation replaces every word, so the guard's word comparison
+    would reject it. Translation modes skip the guard."""
+    from src.llm_cleanup import LLMCleanup
+    reply = "I have a question. What time is the meeting tomorrow?"
+    llm = LLMCleanup(backend=_FakeBackend(reply=reply))
+    raw = "我有个问题。明天几点开会"
+    out = llm.cleanup(raw, custom_prompt=f"Translate to English: {raw}",
+                      allow_script_change=True, echo_questions=True)
+    assert out == reply
+
+
+# --- Settings model dropdown: labels and re-selection ---------------------
+
+def test_local_model_label_round_trip():
+    from src.llm_backend import local_model_label, local_model_name
+    assert local_model_label("qwen3:4b") == "qwen3:4b  (not recommended)"
+    for name in ("qwen2.5:3b", "qwen2.5:7b-instruct-q3_K_M", "qwen3:4b"):
+        assert local_model_name(local_model_label(name)) == name
+
+
+def test_find_local_model_matches_exact_name_not_prefix():
+    """Ollama lists the newest model first. Pulling the q3 build must not
+    move the selection off "qwen2.5:7b", whose name is a prefix of it."""
+    from src.llm_backend import find_local_model, local_model_label
+    labels = [local_model_label(m) for m in
+              ("qwen2.5:7b-instruct-q3_K_M", "qwen2.5:7b", "qwen3:4b")]
+    assert find_local_model(labels, "qwen2.5:7b") == 1
+    assert find_local_model(labels, "qwen2.5:7b-instruct-q3_K_M") == 0
+    assert find_local_model(labels, "qwen3:4b") == 2
+    assert find_local_model(labels, "gemma3:4b") is None

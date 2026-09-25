@@ -459,9 +459,17 @@ class SetupWizard:
         self._tone_result.setTextColor_(
             NSColor.colorWithCalibratedRed_green_blue_alpha_(1.0, 0.7, 0.0, 1.0)
         )
+        # Use the same guards a real dictation gets once this prompt is saved
+        # into Quick mode, so the preview shows what the user will see.
+        from .modes import Mode
+        mode = Mode(name="Quick", prompt_template=prompt_template)
 
         def _run():
-            result = self._app._llm.cleanup(sample_text, custom_prompt=custom_prompt)
+            result = self._app._llm.cleanup(
+                sample_text, custom_prompt=custom_prompt,
+                allow_script_change=mode.allows_translation(),
+                echo_questions=mode.echoes_questions(),
+            )
 
             def _apply():
                 self._tone_result.setStringValue_(f"Result: {result}")
