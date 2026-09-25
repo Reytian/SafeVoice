@@ -103,6 +103,15 @@ while IFS= read -r fw; do
         --sign "$SIGN_ID" "$fw" 2>/dev/null || true
 done < <(find "$APP/Contents/Frameworks" -name "*.framework" -type d 2>/dev/null)
 
+# Sign helper executables in Contents/MacOS (py2app ships a standalone
+# `python` next to the launcher). Signing the bundle below covers only the
+# main executable, and the notary service rejects the helper's leftover
+# ad-hoc signature. Same entitlements as the app, as in the v0.1.0 release.
+while IFS= read -r exe; do
+    codesign --force --timestamp --options runtime \
+        --entitlements "$ENTITLEMENTS" --sign "$SIGN_ID" "$exe"
+done < <(find "$APP/Contents/MacOS" -type f -perm -u+x ! -name "SafeVoice")
+
 # Sign the app bundle last, with entitlements.
 codesign --force --timestamp --options runtime \
     --entitlements "$ENTITLEMENTS" \
