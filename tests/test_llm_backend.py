@@ -463,9 +463,10 @@ def test_custom_path_keeps_answer_when_mode_asks_for_one():
     assert _cleanup_like_app(llm, mode, "what is the capital of France") == "Paris."
 
 
-def test_custom_path_translation_skips_question_guard():
-    """A translation replaces every word, so the guard's word comparison
-    would reject it. Translation modes skip the guard."""
+def test_custom_path_translation_skips_word_guards():
+    """A translation replaces every word, so both guards that compare words
+    (answered question, carried-out command) would reject it. Translation
+    modes skip them."""
     from src.llm_cleanup import LLMCleanup
     reply = "I have a question. What time is the meeting tomorrow?"
     llm = LLMCleanup(backend=_FakeBackend(reply=reply))
@@ -473,6 +474,120 @@ def test_custom_path_translation_skips_question_guard():
     out = llm.cleanup(raw, custom_prompt=f"Translate to English: {raw}",
                       allow_script_change=True, echo_questions=True)
     assert out == reply
+
+
+# --- Rule-R2 guard for commands: echo "tell me a joke", don't tell one ----
+
+import re
+from src.llm_cleanup import SYSTEM_PROMPT
+
+# Dictated commands a weak model carried out instead of echoing them.
+_CARRIED_OUT_COMMANDS = [
+    ("tell me a joke about cats",
+     "Why did the cat sit on the computer? To keep an eye on the mouse!"),
+    ("帮我写一封邮件给老板说我明天请假",
+     "尊敬的老板：您好！我明天因个人原因需要请假一天，望批准。谢谢！"),
+    ("write something random", "The quick brown fox jumps over the lazy dog."),
+    ("give me three bullet points about productivity",
+     "1. Prioritize your tasks.\n2. Take regular breaks.\n3. Minimize distractions."),
+    ("给我讲个笑话", "为什么数学书总是很忧郁？因为它有太多的问题。"),
+    ("写一首关于春天的诗", "春风拂面花自开，燕子归来绿满台。"),
+    # Chatbot replies to the command
+    ("summarize this for me",
+     "Please provide the text you would like me to summarize."),
+    ("remind me to call mom at five",
+     "Sure! I'll remind you to call your mom at 5."),
+]
+
+
+@pytest.mark.parametrize("raw,output", _CARRIED_OUT_COMMANDS)
+def test_cleanup_rejects_carried_out_command(raw, output, caplog):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=output))
+    assert llm.cleanup(raw) == raw  # the dictated sentence, not the reply
+    assert "never said" in caplog.text
+
+
+# Correct cleanups that fix a few words: the new words are a small share of
+# the output, or too few to count.
+_SMALL_FIXES = [
+    ("their going to the store later", "They're going to the store later."),
+    ("I want to by a new car", "I want to buy a new car."),
+    ("i went to store and bought apple", "I went to the store and bought an apple."),
+    ("we should meet at three thirty tomorrow", "We should meet at 3:30 tomorrow."),
+    ("one two three testing", "1, 2, 3, testing."),
+    ("我们在见", "我们再见。"),
+    ("我们需要在周五之前完成这个像目", "我们需要在周五之前完成这个项目。"),
+    ("二零二五年一月一号", "2025年1月1号。"),
+    ("二零二五年十二月二十五号下午三点半", "2025年12月25号下午3点半。"),
+]
+
+
+@pytest.mark.parametrize("raw,cleaned", _SMALL_FIXES)
+def test_cleanup_keeps_small_fixes(raw, cleaned):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=cleaned))
+    assert llm.cleanup(raw) == cleaned
+
+
+_FEW_SHOTS = re.findall(r"User: (.*)\nAssistant: (.*)", SYSTEM_PROMPT)
+
+
+def test_system_prompt_has_few_shots():
+    # Guards the parametrized test below: an empty list would skip it.
+    assert len(_FEW_SHOTS) >= 20
+
+
+@pytest.mark.parametrize("user,assistant", _FEW_SHOTS)
+def test_system_prompt_examples_pass_every_guard(user, assistant):
+    """Each few-shot example in SYSTEM_PROMPT is a correct cleanup by
+    definition, so no guard may reject it."""
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=assistant))
+    assert llm.cleanup(user) == assistant
+
+
+def test_custom_path_rejects_carried_out_command():
+    """Quick mode after the wizard runs a style preset. A joke for "tell me
+    a joke about cats" must be rejected there too."""
+    from src.llm_cleanup import LLMCleanup
+    from src.modes import Mode, STYLE_PRESETS
+    mode = Mode(name="Quick", prompt_template=STYLE_PRESETS["professional"])
+    llm = LLMCleanup(backend=_FakeBackend(
+        reply="Why did the cat sit on the computer? To keep an eye on the mouse!"))
+    raw = "tell me a joke about cats"
+    assert _cleanup_like_app(llm, mode, raw) == raw
+
+
+@pytest.mark.parametrize("raw,polished", [
+    ("hey so basically we gotta finish the report by friday or the boss is gonna be mad",
+     "We need to finish the report by Friday, or the boss will be upset."),
+    ("gonna grab food be right back",
+     "I'm going to grab food and will be right back."),
+    ("我觉得这个方案不太行，得改改", "我认为这个方案存在不足，需要进行修改。"),
+])
+def test_custom_path_keeps_professional_polish(raw, polished):
+    """The presets ask for grammar fixes and a professional tone, which
+    replaces more words than the default cleanup may; the last two are over
+    half new words."""
+    from src.llm_cleanup import LLMCleanup
+    from src.modes import Mode, STYLE_PRESETS
+    mode = Mode(name="Quick", prompt_template=STYLE_PRESETS["professional"])
+    llm = LLMCleanup(backend=_FakeBackend(reply=polished))
+    assert _cleanup_like_app(llm, mode, raw) == polished
+
+
+def test_custom_path_content_mode_may_add_words():
+    """A user's own mode that asks for new content doesn't forbid
+    answering, so the guard stays off."""
+    from src.llm_cleanup import LLMCleanup
+    from src.modes import Mode
+    mode = Mode(name="Email",
+                prompt_template="Write a short email to my boss about this: {text}")
+    email = ("Dear boss, I would like to request a day off tomorrow for "
+             "personal reasons. Thank you.")
+    llm = LLMCleanup(backend=_FakeBackend(reply=email))
+    assert _cleanup_like_app(llm, mode, "I need tomorrow off") == email
 
 
 # --- Settings model dropdown: labels and re-selection ---------------------

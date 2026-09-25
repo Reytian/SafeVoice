@@ -449,6 +449,32 @@ def _answered_a_question(input_text: str, output_text: str) -> bool:
             or _answer_beside_question(input_text, output_text))
 
 
+# Rule R2 covers commands too: "tell me a joke about cats" must be pasted as
+# that sentence, not as a joke, and "帮我写一封邮件给老板说我明天请假" not as
+# the email itself. Cleanup (rules E1-E6) only deletes the speaker's words
+# and fixes a few, so a carried-out command stands out as output made mostly
+# of words the speaker never said. How large a share is allowed depends on
+# the prompt: the default one forbids any rephrasing (rule R4), while the
+# style presets ask for grammar fixes and a professional tone, which
+# legitimately replace more words ("gonna" -> "going to", "搞定" -> "完成").
+_MAX_ADDED_SHARE = 0.5
+_MAX_ADDED_SHARE_STYLED = 0.6
+# Below this many new units the share doesn't matter, so a few homophone or
+# number fixes in a short text ("their" -> "they're", "一号" -> "1号") never
+# count.
+_MIN_ADDED_UNITS = 4
+
+
+def _added_too_much(input_text: str, output_text: str, max_share: float) -> bool:
+    """Detect a carried-out command: at least _MIN_ADDED_UNITS of the
+    output's content units, and more than max_share of them, are units the
+    speaker never said."""
+    output_units = _content_units(output_text)
+    added = sum((output_units - _content_units(input_text)).values())
+    return (added >= _MIN_ADDED_UNITS
+            and added > max_share * sum(output_units.values()))
+
+
 class LLMCleanup:
     """Cleans up raw ASR text using a pluggable LLM backend."""
 
@@ -522,10 +548,11 @@ class LLMCleanup:
                 custom-prompt result that flips the script (Chinese in,
                 English out) is rejected as model misbehavior.
             echo_questions: Custom-prompt path only. Set True when the mode's
-                prompt says a dictated question must be transcribed, not
-                answered (the style presets and Formal Writing do). A result
-                that answers the question is then rejected, exactly as on the
-                default path, which always checks this.
+                prompt says dictated text must be transcribed, not answered
+                or acted on (the style presets and Formal Writing do). A
+                result that answers a dictated question or carries out a
+                dictated command is then rejected, as on the default path,
+                which always checks both.
 
         Returns the cleaned text, or the original text if cleanup fails.
         """
@@ -577,21 +604,31 @@ class LLMCleanup:
                             "rule-stripped text.",
                         )
                         return pre_cleaned
-                    # Same rule-R2 guard as the default path, for modes whose
+                    # Same rule-R2 guards as the default path, for modes whose
                     # prompt forbids answering. That covers Quick mode after
                     # the first-run wizard, which saves a style preset into
-                    # it. Translation modes skip it: the guard compares the
+                    # it. Translation modes skip them: both compare the
                     # output's words with the speaker's, and a translation
                     # replaces all of them.
-                    if (echo_questions and not allow_script_change
-                            and _answered_a_question(pre_cleaned, result)):
-                        logger.warning(
-                            "Custom LLM cleanup rejected (answered a dictated "
-                            "question instead of echoing it): %s -> %s. "
-                            "Falling back to rule-stripped text.",
-                            redact(raw_text), redact(result),
-                        )
-                        return pre_cleaned
+                    if echo_questions and not allow_script_change:
+                        if _answered_a_question(pre_cleaned, result):
+                            logger.warning(
+                                "Custom LLM cleanup rejected (answered a "
+                                "dictated question instead of echoing it): "
+                                "%s -> %s. Falling back to rule-stripped text.",
+                                redact(raw_text), redact(result),
+                            )
+                            return pre_cleaned
+                        if _added_too_much(pre_cleaned, result,
+                                           _MAX_ADDED_SHARE_STYLED):
+                            logger.warning(
+                                "Custom LLM cleanup rejected (mostly words the "
+                                "speaker never said, likely a carried-out "
+                                "command): %s -> %s. Falling back to "
+                                "rule-stripped text.",
+                                redact(raw_text), redact(result),
+                            )
+                            return pre_cleaned
                     logger.info("Custom LLM: %s -> %s", redact(raw_text), redact(result))
                     return result
             except LLMTruncatedError as e:
@@ -671,6 +708,18 @@ class LLMCleanup:
                         "LLM cleanup rejected (answered a dictated question "
                         "instead of echoing it): %s -> %s. Falling back to "
                         "rule-stripped text.",
+                        redact(raw_text), redact(cleaned),
+                    )
+                    return pre_cleaned
+                # Guard: reject a carried-out command (rule R2), e.g. a joke
+                # for "tell me a joke about cats": output made mostly of
+                # words the speaker never said. It runs after the question
+                # guard so an answered question is logged as one.
+                if _added_too_much(pre_cleaned, cleaned, _MAX_ADDED_SHARE):
+                    logger.warning(
+                        "LLM cleanup rejected (mostly words the speaker never "
+                        "said, likely a carried-out command): %s -> %s. "
+                        "Falling back to rule-stripped text.",
                         redact(raw_text), redact(cleaned),
                     )
                     return pre_cleaned
