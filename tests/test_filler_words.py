@@ -114,3 +114,54 @@ def test_llm_is_sent_the_kept_word(raw, pre_cleaned):
 def test_failed_cleanup_pastes_the_kept_word(raw, pre_cleaned):
     llm = LLMCleanup(backend=_EchoBackend(exc=RuntimeError("backend down")))
     assert llm.cleanup(raw) == pre_cleaned
+
+
+# --- Sentence starts the ASR writes: quotes, colons, repeated hesitations --
+
+@pytest.mark.parametrize("text,expected", [
+    # Reported speech, and a colon before the quoted words
+    ('She asked, "Ah, what time is it?"', 'She asked, "what time is it?"'),
+    ("So my question is: Um, when do we start?", "So my question is: when do we start?"),
+    ('He said, "Um, no." Uh, then I left.', 'He said, "no." then I left.'),
+    ("Hello\nUm, so we go", "Hello\nso we go"),
+    ("Well - Um, I think so", "Well - I think so"),
+    # A second capitalised hesitation follows one that went
+    ("Um, Um, so I think", "so I think"),
+    ("Hmm, Ah, I see.", "I see."),
+    ("Okay. Um Um so", "Okay. so"),
+])
+def test_capitalised_hesitation_after_quote_colon_or_hesitation_goes(text, expected):
+    assert strip_filler_words(text) == expected
+    assert has_filler_words(text)
+
+
+@pytest.mark.parametrize("text", [
+    # A name or unit in front of the hesitation keeps it mid-sentence
+    "call Er, Um, tomorrow",
+    "it is 5 mm, Um, wide",
+])
+def test_capitalised_hesitation_after_a_kept_word_stays(text):
+    assert strip_filler_words(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    "the screw is five mm long",
+    "a twenty mm gap",
+    "two point five mm thick",
+    "half a mm off",
+    "cut it to twenty five mm",
+])
+def test_mm_after_a_number_word_is_kept(text):
+    assert strip_filler_words(text) == text
+    assert not has_filler_words(text)
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Only "mm" is a unit after a number word; "ah" is a hesitation there
+    ("we need one ah two more days", "we need one two more days"),
+    ("I said five um six", "I said five six"),
+    ("about five, mm, six mm", "about five, six mm"),
+])
+def test_hesitations_after_number_words_are_stripped(text, expected):
+    assert strip_filler_words(text) == expected
+    assert has_filler_words(text)

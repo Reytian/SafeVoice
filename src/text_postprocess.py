@@ -61,9 +61,10 @@ _CN_HESITATION_LEADING_RE = re.compile(rf"^[{_CN_HESITATION_CHARS}]+(?=[^\s，�
 #   HMM", "call Er", "5 Ah"). A sentence may open with a capitalised
 #   hesitation ("Um, so ..."), so there a capitalised filler still goes.
 #   A name like "Er" that opens a sentence goes with it, which is rare.
-# - is not "mm" or "ah" right after a number. Case can't tell these units
-#   from the hesitations, but "5 mm" is millimetres and "5 ah" amp-hours.
-#   After a comma it is a hesitation again: "5, mm, 6".
+# - is not "mm" or "ah" right after a number, or "mm" after a number word.
+#   Case can't tell these units from the hesitations, but "5 mm" and "five
+#   mm" are millimetres and "5 ah" amp-hours. After a comma it is a
+#   hesitation again: "5, mm, 6".
 # A filler joined to a neighbouring word by - / . or : is part of that
 # word ("uh-huh", "mm-hmm", "mm/dd/yyyy", "hh:mm", "5-mm"), so the pattern
 # doesn't match it. Still lost: "mm" as a unit with no number ("in mm").
@@ -72,12 +73,39 @@ _EN_FILLER_RE = re.compile(
     r"(?<!\w[-/.:])\b(" + "|".join(_EN_FILLER_WORDS) + r")\b(?![-/.:]\w)[\s,]*",
     flags=re.IGNORECASE,
 )
+# "mm" and "ah" right after a digit are units ("5 mm", "5 ah"). The ASR
+# writes small numbers as words ("five mm", "twenty five mm", "two point
+# five mm", "half a mm"), so "mm" is a unit after a number word too. "ah"
+# is not: after a number word it is nearly always a hesitation ("one ah
+# two"), and the ASR capitalises amp-hours ("two Ah"), which the case rule
+# keeps.
 _EN_UNIT_FILLERS = ("mm", "ah")
 _AFTER_NUMBER_RE = re.compile(r"\d\s*$")
-# What precedes a filler that opens a sentence: nothing or the end of the
-# last sentence, then spaces and commas. A comma can be what is left of a
-# Chinese hesitation removed before this step ("嗯，Um, so" -> "，Um, so").
-_SENTENCE_START_RE = re.compile(r"(?:^|[.!?…。！？])[\s，、,]*$")
+_EN_NUMBER_WORDS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+    "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+    "thousand", "million", "half", "quarter",
+)
+_AFTER_NUMBER_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(_EN_NUMBER_WORDS) + r")(?:\s+an?)?\s+$",
+    flags=re.IGNORECASE,
+)
+# What precedes a filler that opens a sentence: nothing, the end of the last
+# sentence, a colon, semicolon or dash, or an opening quote or bracket (the
+# ASR writes reported speech as 'She asked, "Ah, what time is it?"' and
+# "my question is: Um, when do we start?"), then spaces and commas. A comma
+# can be what is left of a Chinese hesitation removed before this step
+# ("嗯，Um, so" -> "，Um, so"). Hesitations in front of this one are looked
+# past as well ("Um, Um, so"), since they go too.
+_SENTENCE_START_RE = re.compile(
+    r"(?:^|[.!?…。！？:：;；\n\-–—]|[\"“「『‘'(（\[【])[\s，、,]*$"
+)
+_PRECEDING_FILLERS_RE = re.compile(
+    r"(?:\b(?:" + "|".join(_EN_FILLER_WORDS) + r")\b[\s,]*)+$",
+    flags=re.IGNORECASE,
+)
 
 
 def _strip_en_filler(m: re.Match) -> str:
@@ -89,8 +117,11 @@ def _strip_en_filler(m: re.Match) -> str:
     if filler.islower():
         if filler in _EN_UNIT_FILLERS and _AFTER_NUMBER_RE.search(before):
             return m.group(0)
+        if filler == "mm" and _AFTER_NUMBER_WORD_RE.search(before):
+            return m.group(0)
         return ""
-    if filler.istitle() and _SENTENCE_START_RE.search(before):
+    if filler.istitle() and _SENTENCE_START_RE.search(
+            _PRECEDING_FILLERS_RE.sub("", before)):
         return ""
     return m.group(0)
 
