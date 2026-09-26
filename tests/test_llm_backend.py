@@ -867,3 +867,203 @@ def test_dropped_capitalised_hesitation_in_chinese_is_not_a_translation():
     cleaned = "好的，我觉得这个方案可以，我们下周再讨论。"
     llm = LLMCleanup(backend=_FakeBackend(reply=cleaned))
     assert llm.cleanup(raw) == cleaned
+
+
+
+
+# --- After v0.1.1: pseudo-clefts and requests that already say "please" ---
+# Two false positives of the question guard, both confirmed on 9324033: a
+# statement that opens like a "what" question, and a "please" request turned
+# into a polite command. Either way the correct rewrite fell back to the
+# rule-stripped text.
+
+@pytest.mark.parametrize("text", [
+    "what happened was the server crashed", "what matters is that we ship on time",
+    "what surprised me was the price", "so what happened is the server restarted",
+    "what needs to happen is a rewrite", "what matters is that we do it right",
+])
+def test_is_question_ignores_pseudo_clefts(text):
+    from src.llm_cleanup import _is_question
+    assert not _is_question(text)
+
+
+@pytest.mark.parametrize("text", [
+    "what happened to the server", "what caused the outage",
+    # The is/was belongs to a clause of its own
+    "what happens when the queue is full", "what happened to the build that was failing",
+    "what makes you think it is broken", "what happens every time it is run",
+    # The is/was asks itself, or a question follows
+    "what matters more is it speed or quality", "what happened was he fired",
+    "what happened here is this a bug",
+    "what happened was the server crashed so what do we do now",
+])
+def test_is_question_recognizes_what_verb_questions(text):
+    from src.llm_cleanup import _is_question
+    assert _is_question(text)
+
+
+@pytest.mark.parametrize("raw,cleaned", [
+    ("what surprised me was the price", "The price surprised me."),
+    ("can you please send it", "Please send it."),
+    ("could you please review my PR today", "Please review my PR today."),
+])
+def test_cleanup_keeps_pseudo_cleft_and_please_rewrites(raw, cleaned):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=cleaned))
+    assert llm.cleanup(raw) == cleaned
+
+
+@pytest.mark.parametrize("mode,raw,polished", [
+    ("Formal Writing", "what happened was the server crashed", "The server crashed."),
+    ("professional", "what matters is that we ship on time",
+     "Shipping on time is what matters."),
+    ("Formal Writing", "can you please send it", "Please send it."),
+    ("professional", "OK could you kindly send the invoice", "Kindly send the invoice."),
+    ("Formal Writing", "I finished the draft. Can you please review it?",
+     "I finished the draft. Please review it."),
+])
+def test_styled_path_keeps_pseudo_cleft_and_please_rewrites(mode, raw, polished):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=polished))
+    assert _cleanup_like_app(llm, _mode(mode), raw) == polished
+
+
+@pytest.mark.parametrize("raw,answer", [
+    # An answer phrased as a pseudo-cleft passed for an echo of the question
+    # and was pasted.
+    ("what caused the outage", "What caused the outage was a bad deploy."),
+    ("what went wrong", "What went wrong was the config."),
+    # Questions that open like a pseudo-cleft
+    ("what matters more is it speed or quality", "Quality matters more."),
+    ("what happened was he fired", "He was fired."),
+    ("what happened was the server crashed so what do we do now",
+     "What happened was the server crashed. We should restart it."),
+    # With "please" said already, the command may only drop the "can you"
+    ("can you please send it", "You can send it, please."),
+    ("could you please confirm the meeting is at three", "Please, the meeting is at three."),
+    ("Is the meeting at three? Can you confirm, please?",
+     "The meeting is at three. Please confirm."),
+])
+def test_answered_a_question_catches_answer(raw, answer):
+    from src.llm_cleanup import _answered_a_question
+    assert _answered_a_question(raw, answer)
+
+
+def test_cleanup_rejects_answer_phrased_as_pseudo_cleft(caplog):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply="What caused the outage was a bad deploy."))
+    assert llm.cleanup("what caused the outage") == "what caused the outage"
+    assert "answered a dictated question" in caplog.text
+
+
+# --- Review fixes: what the pseudo-cleft and "please" readings may not swallow
+# The first version read any is/was after "what" + verb as a pseudo-cleft, so
+# real questions whose is/was belongs to a clause of their own became
+# statements, and a model's answer to them was pasted. The "please" command
+# check only compared counts of words, so a reordered answer passed.
+
+@pytest.mark.parametrize("text", [
+    # A relative clause without "that": a second subject before the is/was
+    "what happened to the project Sarah was leading",
+    "what happened to the project sarah was leading",
+    "what caused the bug the customer is seeing",
+    "what happened to the package you told me was shipped",
+    "what happened to the PR it is based on",
+    "what happens in the case the test is flaky",
+    # Clause openers and verbs that take a clause
+    "what happens to the data whenever the account is deleted",
+    "what happens in case the server is down",
+    "what made you assume the build was broken",
+    "what caused the error saying access is denied",
+    "what happened to whatever was in the cache",
+    # Two questions joined, or a choice
+    "what caused the crash and was any data lost",
+    "what works better is the old version or the new one",
+    # A yes/no question run on after the is/was
+    "what happened is anyone hurt", "what happened is my account locked",
+    "what happened was the deploy successful",
+    "what failed tests is the pipeline reporting",
+    # An indirect question after the is/was
+    "what needs to be decided is who pays for the upgrade",
+    # A question run on after a finished pseudo-cleft
+    "what happened was the server crashed so is the fix ready",
+    "what happened was the server crashed did anyone notice",
+    "what happened was the server crashed where are the logs",
+    "what happened was the server crashed which service failed",
+    "what happened was the server crashed did the backup run",
+    "what happened was the server crashed any ideas",
+    "what matters is that we ship on time are the tests passing",
+])
+def test_is_question_keeps_questions_that_open_like_a_cleft(text):
+    from src.llm_cleanup import _is_question
+    assert _is_question(text)
+
+
+@pytest.mark.parametrize("text", [
+    "what caused the outage was a bad deploy", "what caused that was a bad deploy",
+    "what happened last time was the same thing",
+    "what helped us the most was the checklist",
+    "what got us the deal was the price", "what needs to be done is a rewrite",
+    "what happened to the Microsoft deal was the price",
+    "what surprised Sarah was the price", "what counts is effort",
+    "what caused the outage was never explained",
+    # What follows the is/was is a statement, even with an auxiliary or a
+    # relative pronoun in it
+    "what happened was there was a power cut",
+    "what happened was I had it on mute", "what matters is that we did it right",
+    "what happened was the intern did the migration",
+    "what happened was the server crashed which led to an outage",
+    "what happened was the vendor who was supposed to deliver cancelled",
+    "what happened was we didn't get any feedback",
+])
+def test_is_question_ignores_more_pseudo_clefts(text):
+    from src.llm_cleanup import _is_question
+    assert not _is_question(text)
+
+
+@pytest.mark.parametrize("raw,answer", [
+    ("what happened to the project Sarah was leading",
+     "The project Sarah was leading was cancelled."),
+    ("what caused the crash and was any data lost",
+     "The crash was caused by a memory leak and no data was lost."),
+    ("what happened was the server crashed so is the fix ready",
+     "The server crashed, so the fix is ready."),
+    ("what happened is my account locked", "Your account is locked."),
+])
+def test_styled_path_rejects_answer_to_what_verb_question(raw, answer, caplog):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=answer))
+    assert _cleanup_like_app(llm, _mode("Formal Writing"), raw) == raw
+    assert "answered a dictated question" in caplog.text
+
+
+@pytest.mark.parametrize("raw,answer", [
+    # The command reorders the words or splits off an answer
+    ("Can you please check the logs, is the server down?",
+     "Please check the logs. The server is down."),
+    ("could you please confirm the meeting is at three",
+     "Please confirm. The meeting is at three."),
+    ("can you please send it is it ready", "Please send it. It is ready."),
+    # A question that opens like a request is answered, not turned into one
+    ("Will you please send the report? Will you be at the meeting?",
+     "Please send the report. You will be at the meeting."),
+    # A word that isn't a lead-in or a filler goes
+    ("can you please turn right at the next light", "Please turn at the next light."),
+])
+def test_answered_a_question_catches_answer_after_please(raw, answer):
+    from src.llm_cleanup import _answered_a_question
+    assert _answered_a_question(raw, answer)
+
+
+@pytest.mark.parametrize("raw,command", [
+    ("could you please just send me the file", "Please send me the file."),
+    ("can you please kind of hurry up with the report", "Please hurry up with the report."),
+    ("Could you please check the server? Would you restart it?",
+     "Please check the server. Restart it."),
+    ("can you please tell me what time it is", "Please tell me what time it is."),
+])
+def test_please_request_may_drop_fillers(raw, command):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=command))
+    assert llm.cleanup(raw) == command
+    assert _cleanup_like_app(llm, _mode("Formal Writing"), raw) == command
