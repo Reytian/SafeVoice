@@ -47,6 +47,21 @@ def test_only_the_english_filler_rule_is_skipped():
     assert has_filler_words(text, language="German")
 
 
+@pytest.mark.parametrize("text,language,expected", [
+    # Only the fillers that are words in the language are kept; the ASR
+    # writes a Dutch hesitation as "uh"/"uhm", and "hmm" is one everywhere.
+    ("Ik denk, uh, dat het goed is", "Dutch", "Ik denk, dat het goed is"),
+    ("Er is, uhm, een probleem", "Dutch", "Er is, een probleem"),
+    ("Hmm, ich weiß nicht", "German", "ich weiß nicht"),
+    ("Wir treffen uns, ah, um 5 Uhr", "German", "Wir treffen uns, um 5 Uhr"),
+    ("Uh, eu acho que sim, um carro", "Portuguese", "eu acho que sim, um carro"),
+    ("Det er, mm, godt", "Danish", "Det er, godt"),
+])
+def test_other_hesitations_still_go_in_those_languages(text, language, expected):
+    assert strip_filler_words(text, language=language) == expected
+    assert has_filler_words(text, language=language)
+
+
 # --- Other languages keep the rule -----------------------------------------
 
 @pytest.mark.parametrize("text,language,expected", [
