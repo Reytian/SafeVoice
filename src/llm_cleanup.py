@@ -702,9 +702,10 @@ class LLMCleanup:
             backend = OllamaBackend()
         self._backend = backend
         self._speculative_result: Optional[str] = None
-        # The input text, prompt and guard flags that produced the cached
-        # result. A result made under another mode's prompt and guards (a
-        # translation, an answer) must not be pasted in this one.
+        # The input text, prompt, guard flags and language that produced the
+        # cached result. A result made under another mode's prompt and guards
+        # (a translation, an answer) must not be pasted in this one, nor a
+        # rule-stripped fallback made for another language.
         self._speculative_input: Optional[tuple] = None
         self._speculative_lock = threading.Lock()
 
@@ -722,15 +723,18 @@ class LLMCleanup:
 
     def speculative_cleanup(self, text: str, custom_prompt: str = None,
                             allow_script_change: bool = False,
-                            echo_questions: bool = False):
+                            echo_questions: bool = False,
+                            language: Optional[str] = None):
         """Fire-and-forget: run cleanup in background, cache result."""
-        key = (text, custom_prompt, allow_script_change, echo_questions)
+        key = (text, custom_prompt, allow_script_change, echo_questions,
+               language)
 
         def _run():
             result = self.cleanup(
                 text, custom_prompt=custom_prompt,
                 allow_script_change=allow_script_change,
                 echo_questions=echo_questions,
+                language=language,
             )
             with self._speculative_lock:
                 self._speculative_input = key
@@ -739,10 +743,12 @@ class LLMCleanup:
 
     def get_speculative_result(self, text: str, custom_prompt: str = None,
                                allow_script_change: bool = False,
-                               echo_questions: bool = False) -> Optional[str]:
-        """Return the cached result if it was made for this text with the
-        same prompt and guards, else None."""
-        key = (text, custom_prompt, allow_script_change, echo_questions)
+                               echo_questions: bool = False,
+                               language: Optional[str] = None) -> Optional[str]:
+        """Return the cached result if it was made for this text and
+        language with the same prompt and guards, else None."""
+        key = (text, custom_prompt, allow_script_change, echo_questions,
+               language)
         with self._speculative_lock:
             if self._speculative_input == key and self._speculative_result:
                 result = self._speculative_result
@@ -760,11 +766,16 @@ class LLMCleanup:
     def cleanup(self, raw_text: str, languages: Optional[list] = None,
                 custom_prompt: str = None,
                 allow_script_change: bool = False,
-                echo_questions: bool = False) -> str:
+                echo_questions: bool = False,
+                language: Optional[str] = None) -> str:
         """Clean up raw ASR text using the LLM.
 
         Args:
             raw_text: The raw ASR transcription text.
+            language: The language the ASR reported for raw_text
+                      ("German"), if known. The rule-based filler strip
+                      keeps English fillers that are words in it (German
+                      "um 5 Uhr"); see strip_filler_words.
             languages: Optional list of target language names
                        (e.g. ["English"], ["English", "Chinese"]).
                        If provided (excluding "Auto"), foreign words will be
@@ -791,7 +802,7 @@ class LLMCleanup:
         # cleans short/skipped-LLM cases and reduces the token surface the
         # LLM sees on the longer path. Self-corrections are intentionally
         # NOT handled here -- the LLM does that with semantic context.
-        pre_cleaned = strip_filler_words(raw_text)
+        pre_cleaned = strip_filler_words(raw_text, language=language)
 
         if not self.is_available():
             return pre_cleaned
