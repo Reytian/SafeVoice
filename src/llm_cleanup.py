@@ -156,9 +156,9 @@ def _after_last_correction(text: str) -> Optional[str]:
 # speaker meant (rule E2): "okay so basically 我们下周..." -> "我们下周...".
 # strip_filler_words leaves them in the text on purpose, since deleting them
 # there breaks sentences ("I like it", "那个方案"), but they must not count
-# as content when measuring how much of what was said an output kept. Where
-# one of these is a real word, leaving it out of both sides of the
-# comparison only makes the measure a little more lenient.
+# as something said when measuring how much of it an output kept. Where one
+# of these is a real word, leaving it out of what was said only makes the
+# guard more lenient.
 _EN_SPOKEN_FILLERS = (
     "you know", "you see", "kind of", "sort of", "kinda", "sorta",
     "i guess", "i think", "i feel like", "i suppose", "i was just thinking",
@@ -195,14 +195,14 @@ _SPOKEN_FILLER_RE = re.compile(
     + rf")(?![^\W{_CJK_RANGES}])|"
     + "|".join(sorted(_ZH_SPOKEN_FILLERS, key=len, reverse=True))
 )
-# Units for sizing what was said: each CJK character, each digit, and each
-# word in other scripts. Thai, Lao, Myanmar and Khmer don't space their
-# words, so their characters are units like CJK ones.
+# Units for sizing a text: each CJK character, each digit, and each word in
+# other scripts. Thai, Lao, Myanmar and Khmer don't space their words, so
+# their characters are units like CJK ones.
 _UNSPACED_RANGES = _CJK_RANGES + "\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff"
 _UNSPACED_RE = re.compile(f"[{_UNSPACED_RANGES}]")
 _SIZE_UNIT_RE = re.compile(
     rf"[{_UNSPACED_RANGES}]|\d"
-    rf"|[^\W\d_{_UNSPACED_RANGES}]+(?:'[^\W\d_{_UNSPACED_RANGES}]+)*"
+    rf"|[^\W\d_{_UNSPACED_RANGES}]+(?:['’][^\W\d_{_UNSPACED_RANGES}]+)*"
 )
 # A restart repeats up to this many units ("we need to, we need to finish").
 _MAX_RESTART_UNITS = 8
@@ -214,15 +214,18 @@ _MIN_KEPT_SHARE = 0.6
 _MIN_DROPPED_SIZE = 6
 
 
-def _spoken_size(text: str) -> int:
-    """How much the text says, in half-words: spoken fillers and hedges
-    left out, and a restart ("我们需要我们需要在周五之前完成") counted once.
-    Repeated digits are not a restart ("八八八八", "1 1 2").
+def _size(units: list) -> int:
+    """Size in half-words: a CJK character counts 1 and a word or digit 2,
+    since most Chinese words have two characters. So "三" -> "3" never
+    shrinks a text, nor does "three" -> "3" or "一三八零零一三八零零零" ->
+    "13800138000"."""
+    return sum(1 if _UNSPACED_RE.match(unit) else 2 for unit in units)
 
-    A CJK character counts 1 and a word or digit 2, since most Chinese
-    words have two characters. So "三" -> "3" never shrinks what was said,
-    nor does "three" -> "3" or "一三八零零一三八零零零" -> "13800138000".
-    """
+
+def _said_units(text: str) -> list:
+    """The units of what the speaker said: spoken fillers and hedges left
+    out, and a restart ("我们需要我们需要在周五之前完成") counted once.
+    Repeated digits are not a restart ("八八八八", "1 1 2")."""
     units = []
     text = _SPOKEN_FILLER_RE.sub(" ", text.lower().replace("’", "'"))
     for unit in _SIZE_UNIT_RE.findall(text):
@@ -233,7 +236,7 @@ def _spoken_size(text: str) -> int:
                     u.isdigit() or u in _NUMBER_UNITS for u in repeat):
                 del units[-n:]
                 break
-    return sum(1 if _UNSPACED_RE.match(unit) else 2 for unit in units)
+    return units
 
 
 def _dropped_too_much(input_text: str, output_text: str) -> bool:
@@ -249,11 +252,13 @@ def _dropped_too_much(input_text: str, output_text: str) -> bool:
     Fillers and hedges don't count as something said, so removing them is
     never over-deletion, however much of the dictation they were: "okay so
     basically 我们下周要把这个方案做完" -> "我们下周需要把这个方案做完。"
+    The output is sized as written, so a filler it keeps only makes the
+    guard more lenient.
     """
     if _has_correction_marker(input_text):
         return False
-    said = _spoken_size(input_text)
-    written = _spoken_size(output_text)
+    said = _size(_said_units(input_text))
+    written = _size(_SIZE_UNIT_RE.findall(output_text))
     return (written < _MIN_KEPT_SHARE * said
             and said - written >= _MIN_DROPPED_SIZE)
 

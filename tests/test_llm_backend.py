@@ -890,15 +890,23 @@ def test_custom_path_shortening_mode_may_drop_words():
                        allow_script_change=True, echo_questions=True) == reply
 
 
-def test_spoken_size():
-    from src.llm_cleanup import _spoken_size
-    # Fillers and hedges don't count; a filler is a whole word
-    assert _spoken_size("okay so basically 我们下周") == _spoken_size("我们下周") == 4
-    assert _spoken_size("嗯那个就是说我觉得吧这个方案呢") == _spoken_size("这个方案")
-    assert _spoken_size("also likely") == 4
+def test_over_deletion_sizes():
+    from src.llm_cleanup import _SIZE_UNIT_RE, _said_units, _size
+
+    def said(text):
+        return _size(_said_units(text))
+
+    def written(text):
+        return _size(_SIZE_UNIT_RE.findall(text))
+
+    # Fillers and hedges are not something said; a filler is a whole word
+    assert said("okay so basically 我们下周") == written("我们下周") == 4
+    assert said("嗯那个就是说我觉得吧这个方案呢") == written("这个方案")
+    assert said("also likely") == written("also likely") == 4
     # A restart counts once, repeated digits count in full
-    assert _spoken_size("we need to, we need to finish") == _spoken_size("we need to finish")
-    assert _spoken_size("八八八八") == 4
+    assert said("we need to, we need to finish") == written("we need to finish")
+    assert said("八八八八") == 4
     # Writing a number as digits never shrinks it
-    assert _spoken_size("13800138000") >= _spoken_size("一三八零零一三八零零零")
-    assert _spoken_size("3") == _spoken_size("three")
+    assert written("13800138000") >= said("一三八零零一三八零零零")
+    assert written("3") == said("three")
+    assert written("don’t") == written("don't") == 2
