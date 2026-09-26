@@ -101,15 +101,14 @@ def _strip_en_filler(m: re.Match) -> str:
 # capitalised at its start, so the case rules above can't save them:
 # German "wir treffen uns um 5 Uhr" (at) and "er kommt" (he), Dutch "er
 # is" (there is), Portuguese "tenho um carro" (a), Danish "det er godt"
-# (is), Swedish "jag ser er" (you), Turkish "er geç" (sooner or later),
-# Czech "technický um" (skill), Vietnamese "um tùm" (lush). A transcript
-# in one of these skips the English filler rule.
+# (is), Swedish "jag ser er" (you), Turkish "er geç" (sooner or later). A
+# transcript in one of these skips the English filler rule.
 # Any other language keeps it, and so does an unknown one. In Chinese or
 # Russian text a Latin "um" is an English hesitation ("嗯 um 我觉得"), and
-# in the ASR's other Latin-script languages these are interjections at most.
+# in the ASR's other Latin-script languages they are at most interjections
+# or rare words.
 _EN_FILLERS_ARE_WORDS_IN = frozenset((
-    "czech", "danish", "dutch", "german", "portuguese", "swedish",
-    "turkish", "vietnamese",
+    "danish", "dutch", "german", "portuguese", "swedish", "turkish",
 ))
 
 

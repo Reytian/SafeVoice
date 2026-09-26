@@ -33,8 +33,6 @@ from src.text_postprocess import has_filler_words, strip_filler_words
     ("Det er godt", "Danish"),                         # is
     ("Jag ser er imorgon", "Swedish"),                 # you
     ("Bunu er geç öğrenecek", "Turkish"),              # sooner or later
-    ("Obdivuji jejich technický um", "Czech"),         # skill
-    ("Cỏ mọc um tùm quanh nhà", "Vietnamese"),         # lush
     # A language name in another case
     ("Eu tenho um carro", "portuguese"),
 ])
