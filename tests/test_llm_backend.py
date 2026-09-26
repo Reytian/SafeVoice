@@ -796,3 +796,109 @@ def test_refresh_local_models_falls_back_to_saved_model(monkeypatch):
     )
     settings_window.SettingsWindow._refresh_local_models(window)
     assert popup.titleOfSelectedItem() == "qwen2.5:3b"
+
+
+# --- Over-deletion guard: fillers are not content ---------------------------
+# The guard compared raw lengths, so dropping the fillers strip_filler_words
+# leaves in ("so", "basically", 就是说, 我觉得吧) looked like dropping the
+# dictation. That kept the guard off the style presets, where a model could
+# drop most of what was said unnoticed.
+
+# Correct cleanups of filler-heavy speech. The default path rejected the
+# first four.
+_FILLER_HEAVY_CLEANUPS = [
+    ("okay so basically 我们下周要把这个方案做完", "我们下周需要把这个方案做完。"),
+    ("so basically like I was thinking that maybe we should kind of like move "
+     "the meeting to Thursday you know", "I suggest we move the meeting to Thursday."),
+    ("嗯那个就是说我觉得吧这个方案呢其实还是有一点点问题的", "我认为这个方案存在一些问题。"),
+    ("yeah so like the client is basically kind of unhappy with the timeline you know",
+     "The client is unhappy with the timeline."),
+    ("嗯那个我们明天就是那个开会的时候再说吧", "我们明天开会的时候再说。"),
+    ("嗯我跟你说那个服务器昨天晚上就是挂了然后我们丢了大概两个小时的数据",
+     "服务器昨天晚上挂了，我们丢了两个小时的数据。"),
+    # A restart counts once
+    ("so what we what we need to what we need to do is finish the report",
+     "What we need to do is finish the report."),
+    ("我们需要我们需要在周五之前完成这个", "我们需要在周五之前完成这个。"),
+    # Spoken numbers written as digits
+    ("我的电话号码是一三八零零一三八零零零", "我的电话号码是13800138000。"),
+]
+
+
+@pytest.mark.parametrize("raw,cleaned", _FILLER_HEAVY_CLEANUPS)
+def test_cleanup_keeps_filler_heavy_cleanup(raw, cleaned):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=cleaned))
+    assert llm.cleanup(raw) == cleaned
+
+
+@pytest.mark.parametrize("mode", ["professional", "Formal Writing"])
+@pytest.mark.parametrize("raw,cleaned", _FILLER_HEAVY_CLEANUPS)
+def test_styled_path_keeps_filler_heavy_cleanup(mode, raw, cleaned):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=cleaned))
+    assert _cleanup_like_app(llm, _mode(mode), raw) == cleaned
+
+
+# Outputs that drop much of what was said. The presets pasted all of them,
+# and the default path pasted the last one and the second, the guard's own
+# example: strip_filler_words takes out "哎，" before the guard compares.
+_OVER_DELETIONS = [
+    ("我想说一下这个项目需要在下周五之前完成然后预算还要再批一次", "预算还要再批一次。"),
+    ("哎，我尝试多录几句话，随便写一段中文，测试一下。", "随便写一段中文，测试一下。"),
+    ("嗯那个就是我们下周要把方案做完然后周五之前发给客户", "周五之前发给客户。"),
+    ("so basically I was thinking we should move the meeting to Thursday and "
+     "also like invite the design team", "Invite the design team."),
+    ("call John tomorrow about the budget", "Call John."),
+    # Repeated digits are a number, not a restart
+    ("我的账号是八八八八八八八八", "我的账号是。"),
+]
+
+
+@pytest.mark.parametrize("raw,output", _OVER_DELETIONS)
+def test_cleanup_rejects_over_deletion(raw, output, caplog):
+    from src.llm_cleanup import LLMCleanup
+    from src.text_postprocess import strip_filler_words
+    llm = LLMCleanup(backend=_FakeBackend(reply=output))
+    assert llm.cleanup(raw) == strip_filler_words(raw)
+    assert "over-deletion" in caplog.text
+
+
+@pytest.mark.parametrize("mode", ["professional", "Formal Writing", "verbatim"])
+@pytest.mark.parametrize("raw,output", _OVER_DELETIONS)
+def test_styled_path_rejects_over_deletion(mode, raw, output, caplog):
+    from src.llm_cleanup import LLMCleanup
+    from src.text_postprocess import strip_filler_words
+    llm = LLMCleanup(backend=_FakeBackend(reply=output))
+    assert _cleanup_like_app(llm, _mode(mode), raw) == strip_filler_words(raw)
+    assert "over-deletion" in caplog.text
+
+
+def test_custom_path_shortening_mode_may_drop_words():
+    """A user's own mode that doesn't say to transcribe may shorten, and a
+    translation may come out shorter than what was said."""
+    from src.llm_cleanup import LLMCleanup
+    from src.modes import Mode
+    raw = "我想说一下这个项目需要在下周五之前完成然后预算还要再批一次"
+    mode = Mode(name="Short", prompt_template="Make this as short as possible: {text}")
+    llm = LLMCleanup(backend=_FakeBackend(reply="预算需重批。"))
+    assert _cleanup_like_app(llm, mode, raw) == "预算需重批。"
+    raw = "I would really appreciate it if you could send me the report"
+    reply = "请把报告发给我。"
+    llm = LLMCleanup(backend=_FakeBackend(reply=reply))
+    assert llm.cleanup(raw, custom_prompt=f"Translate to Chinese: {raw}",
+                       allow_script_change=True, echo_questions=True) == reply
+
+
+def test_spoken_size():
+    from src.llm_cleanup import _spoken_size
+    # Fillers and hedges don't count; a filler is a whole word
+    assert _spoken_size("okay so basically 我们下周") == _spoken_size("我们下周") == 4
+    assert _spoken_size("嗯那个就是说我觉得吧这个方案呢") == _spoken_size("这个方案")
+    assert _spoken_size("also likely") == 4
+    # A restart counts once, repeated digits count in full
+    assert _spoken_size("we need to, we need to finish") == _spoken_size("we need to finish")
+    assert _spoken_size("八八八八") == 4
+    # Writing a number as digits never shrinks it
+    assert _spoken_size("13800138000") >= _spoken_size("一三八零零一三八零零零")
+    assert _spoken_size("3") == _spoken_size("three")

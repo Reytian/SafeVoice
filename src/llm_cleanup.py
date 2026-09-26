@@ -152,33 +152,110 @@ def _after_last_correction(text: str) -> Optional[str]:
     return None if end < 0 else text[end:]
 
 
-def _dropped_too_much(input_text: str, output_text: str) -> bool:
-    """Detect over-deletion: LLM output is much shorter than input without
-    any self-correction marker that would justify the drop.
+# Spoken fillers and hedges a cleanup may drop without losing anything the
+# speaker meant (rule E2): "okay so basically 我们下周..." -> "我们下周...".
+# strip_filler_words leaves them in the text on purpose, since deleting them
+# there breaks sentences ("I like it", "那个方案"), but they must not count
+# as content when measuring how much of what was said an output kept. Where
+# one of these is a real word, leaving it out of both sides of the
+# comparison only makes the measure a little more lenient.
+_EN_SPOKEN_FILLERS = (
+    "you know", "you see", "kind of", "sort of", "kinda", "sorta",
+    "i guess", "i think", "i feel like", "i suppose", "i was just thinking",
+    "i was thinking", "i was just wondering", "i was wondering",
+    "or something like that", "or something", "or whatever",
+    "and stuff like that", "and stuff", "and everything", "and all that",
+    "let's see", "let me see",
+    "to be honest", "if you will", "more or less", "at the end of the day",
+    "the thing is", "here's the thing", "what happened was",
+    "so", "like", "basically", "actually", "literally", "okay", "ok", "well",
+    "just", "really", "right", "yeah", "yep", "yup", "anyway", "anyways",
+    "alright", "honestly", "totally", "obviously", "seriously", "maybe",
+    "probably", "hey", "oh", "um", "umm", "uh", "uhh", "uhm", "er", "erm",
+    "ah", "hmm", "mm",
+)
+_ZH_SPOKEN_FILLERS = (
+    "也就是说", "也就是說", "就是说", "就是說", "就是", "怎么说呢", "怎麼說呢",
+    "你知道吗", "你知道嗎", "你知道吧", "我跟你说", "我跟你說", "我跟你讲",
+    "我跟你講", "是这样的", "是這樣的", "说实话", "說實話", "老实说", "老實說",
+    "那个什么", "那個什麼", "那个啥", "那個啥", "那啥", "那个", "那個",
+    "我觉得吧", "我覺得吧", "我觉得", "我覺得", "我感觉", "我感覺", "感觉", "感覺",
+    "其实", "其實", "反正", "基本上", "所以说", "所以說", "然后", "然後", "的话",
+    "的話", "对吧", "對吧", "是吧", "好吧", "可能", "好像", "大概",
+    # Modal particles and hesitation sounds in the middle of a sentence
+    "啊", "呀", "嘛", "吧", "呢", "哈", "啦", "呗", "唄", "哦", "噢", "喔", "嗯",
+    "呃", "哎", "唉", "诶", "欸",
+)
+# English fillers count only as whole words ("so" is not in "also"). CJK
+# text next to them doesn't join the word: "okay我们" is "okay" + "我们".
+_SPOKEN_FILLER_RE = re.compile(
+    rf"(?<![^\W{_CJK_RANGES}])(?:"
+    + "|".join(r"\s+".join(map(re.escape, filler.split()))
+               for filler in sorted(_EN_SPOKEN_FILLERS, key=len, reverse=True))
+    + rf")(?![^\W{_CJK_RANGES}])|"
+    + "|".join(sorted(_ZH_SPOKEN_FILLERS, key=len, reverse=True))
+)
+# Units for sizing what was said: each CJK character, each digit, and each
+# word in other scripts. Thai, Lao, Myanmar and Khmer don't space their
+# words, so their characters are units like CJK ones.
+_UNSPACED_RANGES = _CJK_RANGES + "\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff"
+_UNSPACED_RE = re.compile(f"[{_UNSPACED_RANGES}]")
+_SIZE_UNIT_RE = re.compile(
+    rf"[{_UNSPACED_RANGES}]|\d"
+    rf"|[^\W\d_{_UNSPACED_RANGES}]+(?:'[^\W\d_{_UNSPACED_RANGES}]+)*"
+)
+# A restart repeats up to this many units ("we need to, we need to finish").
+_MAX_RESTART_UNITS = 8
+# The output has to keep this share of what was said, on the style presets
+# too: they ask for a professional tone, but say not to summarize...
+_MIN_KEPT_SHARE = 0.6
+# ...unless it dropped less than this many half-words: six CJK characters or
+# three words.
+_MIN_DROPPED_SIZE = 6
 
-    The single failure mode this catches: user dictates a multi-clause
-    sentence ("\u54ce\uff0c\u6211\u5c1d\u8bd5\u591a\u5f55\u51e0\u53e5\u8bdd\uff0c\u968f\u4fbf\u5199\u4e00\u6bb5\u4e2d\u6587\uff0c\u6d4b\u8bd5\u4e00\u4e0b\u3002") and the
-    LLM treats the first clause as throat-clearing and drops it
-    ("\u968f\u4fbf\u5199\u4e00\u6bb5\u4e2d\u6587\uff0c\u6d4b\u8bd5\u4e00\u4e0b\u3002"). Filler-only stripping never produces
-    a drop this large; self-correction does, but always with a marker in
-    the input.
 
-    Thresholds chosen so the four legitimate big-drop few-shots all pass:
-      "\u4e94\u70b9\uff0c\u554a\uff0c\u4e0d\u5bf9\uff0c\u516d\u70b9" (10) -> "\u516d\u70b9\u3002" (3) \u2014 has "\u4e0d\u5bf9\uff0c" marker
-      "\u6211\u60f3\u8ba2\u4e09\u5f20\u7968\uff0c\u4e0d\u5bf9\u4e0d\u5bf9\uff0c\u662f\u56db\u5f20" -> "\u6211\u60f3\u8ba2\u56db\u5f20\u7968" \u2014 has "\u4e0d\u5bf9\u4e0d\u5bf9"
-      "send it to John, sorry I mean Jane" -> "Send it to Jane" \u2014 has "i mean"
-    while the deletion case is caught:
-      "\u54ce\uff0c\u6211\u5c1d\u8bd5\u591a\u5f55\u51e0\u53e5\u8bdd\uff0c\u968f\u4fbf\u5199\u4e00\u6bb5\u4e2d\u6587..." -> "\u968f\u4fbf\u5199\u4e00\u6bb5\u4e2d\u6587..." \u2014 no marker, ratio 0.54
+def _spoken_size(text: str) -> int:
+    """How much the text says, in half-words: spoken fillers and hedges
+    left out, and a restart ("我们需要我们需要在周五之前完成") counted once.
+    Repeated digits are not a restart ("八八八八", "1 1 2").
+
+    A CJK character counts 1 and a word or digit 2, since most Chinese
+    words have two characters. So "三" -> "3" never shrinks what was said,
+    nor does "three" -> "3" or "一三八零零一三八零零零" -> "13800138000".
     """
-    in_len = len(input_text.strip())
-    out_len = len(output_text.strip())
-    if in_len < 10:
+    units = []
+    text = _SPOKEN_FILLER_RE.sub(" ", text.lower().replace("’", "'"))
+    for unit in _SIZE_UNIT_RE.findall(text):
+        units.append(unit)
+        for n in range(1, min(_MAX_RESTART_UNITS, len(units) // 2) + 1):
+            repeat = units[-n:]
+            if repeat == units[-2 * n:-n] and not all(
+                    u.isdigit() or u in _NUMBER_UNITS for u in repeat):
+                del units[-n:]
+                break
+    return sum(1 if _UNSPACED_RE.match(unit) else 2 for unit in units)
+
+
+def _dropped_too_much(input_text: str, output_text: str) -> bool:
+    """Detect over-deletion: the output keeps much less than the speaker
+    said, and no self-correction marker explains the drop.
+
+    The failure this catches: the speaker dictates several clauses and the
+    model treats one as throat-clearing and drops it ("我尝试多录几句话，
+    随便写一段中文，测试一下。" -> "随便写一段中文，测试一下。"). A
+    self-correction drops a lot too ("五点，啊，不对，六点" -> "六点。"),
+    but always with a marker in the input.
+
+    Fillers and hedges don't count as something said, so removing them is
+    never over-deletion, however much of the dictation they were: "okay so
+    basically 我们下周要把这个方案做完" -> "我们下周需要把这个方案做完。"
+    """
+    if _has_correction_marker(input_text):
         return False
-    ratio = out_len / in_len
-    drop = in_len - out_len
-    if ratio < 0.6 and drop > 10 and not _has_correction_marker(input_text):
-        return True
-    return False
+    said = _spoken_size(input_text)
+    written = _spoken_size(output_text)
+    return (written < _MIN_KEPT_SHARE * said
+            and said - written >= _MIN_DROPPED_SIZE)
 
 
 def _script_changed(input_text: str, output_text: str) -> bool:
@@ -763,9 +840,9 @@ class LLMCleanup:
             echo_questions: Custom-prompt path only. Set True when the mode's
                 prompt says dictated text must be transcribed, not answered
                 or acted on (the style presets and Formal Writing do). A
-                result that answers a dictated question or carries out a
-                dictated command is then rejected, as on the default path,
-                which always checks both.
+                result that drops much of what was said, answers a dictated
+                question or carries out a dictated command is then rejected,
+                as on the default path, which always checks all three.
 
         Returns the cleaned text, or the original text if cleanup fails.
         """
@@ -817,13 +894,23 @@ class LLMCleanup:
                             "rule-stripped text.",
                         )
                         return pre_cleaned
-                    # Same rule-R2 guards as the default path, for modes whose
-                    # prompt forbids answering. That covers Quick mode after
-                    # the first-run wizard, which saves a style preset into
-                    # it. Translation modes skip them: both compare the
-                    # output's words with the speaker's, and a translation
-                    # replaces all of them.
+                    # Same over-deletion and rule-R2 guards as the default
+                    # path, for modes whose prompt says to transcribe what
+                    # was dictated. That covers Quick mode after the first-
+                    # run wizard, which saves a style preset into it. Other
+                    # custom modes may shorten or answer what was said.
+                    # Translation modes skip the guards too: each compares
+                    # the output with the speaker's own words, and a
+                    # translation replaces all of them.
                     if echo_questions and not allow_script_change:
+                        if _dropped_too_much(pre_cleaned, result):
+                            logger.warning(
+                                "Custom LLM cleanup rejected (over-deletion, "
+                                "no self-correction marker in input): %s -> "
+                                "%s. Falling back to rule-stripped text.",
+                                redact(raw_text), redact(result),
+                            )
+                            return pre_cleaned
                         if _answered_a_question(pre_cleaned, result,
                                                 _MAX_ADDED_SHARE_STYLED):
                             logger.warning(
@@ -895,14 +982,15 @@ class LLMCleanup:
                         len(pre_cleaned), len(cleaned),
                     )
                     return pre_cleaned
-                # Guard: reject over-deletion. If output dropped > 40% of
-                # input length without any self-correction marker, the LLM
-                # treated meaningful content as filler -- e.g. "哎，我尝试多
-                # 录几句话，随便写一段中文，测试一下" was being collapsed
-                # to "随便写一段中文，测试一下" because the model decided
-                # the first clause was preamble. Self-corrections (which
-                # legitimately drop a lot) always carry a marker in the
-                # input and are exempt.
+                # Guard: reject over-deletion. If the output keeps less than
+                # 60% of what was said (fillers and hedges don't count) and
+                # the input has no self-correction marker, the LLM treated
+                # meaningful content as filler -- e.g. "哎，我尝试多录几句
+                # 话，随便写一段中文，测试一下" was being collapsed to "随便
+                # 写一段中文，测试一下" because the model decided the first
+                # clause was preamble. Self-corrections (which legitimately
+                # drop a lot) always carry a marker in the input and are
+                # exempt.
                 if _dropped_too_much(pre_cleaned, cleaned):
                     logger.warning(
                         "LLM cleanup rejected (over-deletion, no self-"
