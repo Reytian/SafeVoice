@@ -19,14 +19,21 @@ Conservative scope:
   droppable in any context.
 - Common English hesitations (um/uh/er/ah/erm/uhh) — word-boundary matched
   so "umbrella" / "ahead" / "around" stay intact.
-- Stuttering: "I I want" -> "I want", "我我想" -> "我想"
+- Stuttering on a safelist of words: "I I want" -> "I want", "我我想" -> "我想".
+  Words people repeat on purpose ("zero zero", "very very", "no no no")
+  are kept.
 - Ambiguous discourse markers (那个 / 这个 / 就是 / 然后 / like / you know)
   are LEFT ALONE here and handled by the LLM with full context. Stripping
   them with regex breaks meaningful sentences ("这个产品" must keep 这个).
+- So are English fillers that may be an acronym, name or unit instead
+  ("the ER", "DD MM YYYY", "5 mm", "uh-huh"); see _EN_FILLER_RE.
+- So are the English fillers that are words in the transcript's language
+  (German "um 5 Uhr", Portuguese "um carro"); see
+  _EN_FILLERS_ARE_WORDS_IN.
 """
 
 import re
-from typing import Iterable
+from typing import Iterable, Optional
 
 # Chinese single-character hesitations. These are nearly always droppable
 # regardless of context — they don't form meaningful words on their own.
@@ -47,20 +54,152 @@ _CN_HESITATION_LEADING_RE = re.compile(rf"^[{_CN_HESITATION_CHARS}]+(?=[^\s，�
 
 # English hesitations. Word-boundary matched so substrings inside real
 # words ("umbrella", "ahead") are preserved.
+# CRITICAL: several of these are also acronyms, names and units. This strip
+# runs before the LLM and is what gets pasted without one, so a word it
+# drops is lost on every path: "the ER last night" -> "the last night",
+# "DD MM YYYY" -> "DD YYYY", "5 mm long" -> "5 long". _strip_en_filler
+# only removes a match that
+# - is lowercase. Inside a sentence ASR writes a hesitation in lowercase,
+#   while acronyms, names and unit symbols keep their capitals ("ER", "an
+#   HMM", "call Er", "5 Ah"). A sentence may open with a capitalised
+#   hesitation ("Um, so ..."), so there a capitalised filler still goes.
+#   A name like "Er" that opens a sentence goes with it, which is rare.
+# - is not "mm" or "ah" right after a number, or "mm" after a number word.
+#   Case can't tell these units from the hesitations, but "5 mm" and "five
+#   mm" are millimetres and "5 ah" amp-hours. After a comma it is a
+#   hesitation again: "5, mm, 6".
+# A filler joined to a neighbouring word by - / . or : is part of that
+# word ("uh-huh", "mm-hmm", "mm/dd/yyyy", "hh:mm", "5-mm"), so the pattern
+# doesn't match it. Still lost: "mm" as a unit with no number ("in mm").
 _EN_FILLER_WORDS = ("um", "umm", "ummm", "uh", "uhh", "uhm", "er", "erm", "ah", "ahh", "hmm", "mm")
 _EN_FILLER_RE = re.compile(
-    r"\b(?:" + "|".join(_EN_FILLER_WORDS) + r")\b[\s,]*",
+    r"(?<!\w[-/.:])\b(" + "|".join(_EN_FILLER_WORDS) + r")\b(?![-/.:]\w)[\s,]*",
+    flags=re.IGNORECASE,
+)
+# "mm" and "ah" right after a digit are units ("5 mm", "5 ah"). The ASR
+# writes small numbers as words ("five mm", "twenty five mm", "two point
+# five mm", "half a mm"), so "mm" is a unit after a number word too. "ah"
+# is not: after a number word it is nearly always a hesitation ("one ah
+# two"), and the ASR capitalises amp-hours ("two Ah"), which the case rule
+# keeps.
+_EN_UNIT_FILLERS = ("mm", "ah")
+_AFTER_NUMBER_RE = re.compile(r"\d\s*$")
+_EN_NUMBER_WORDS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+    "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+    "thousand", "million", "half", "quarter",
+)
+_AFTER_NUMBER_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(_EN_NUMBER_WORDS) + r")(?:\s+an?)?\s+$",
+    flags=re.IGNORECASE,
+)
+# What precedes a filler that opens a sentence: nothing, the end of the last
+# sentence, a colon, semicolon or dash, or an opening quote or bracket (the
+# ASR writes reported speech as 'She asked, "Ah, what time is it?"' and
+# "my question is: Um, when do we start?"), then spaces and commas. A comma
+# can be what is left of a Chinese hesitation removed before this step
+# ("嗯，Um, so" -> "，Um, so"). Hesitations in front of this one are looked
+# past as well ("Um, Um, so"), since they go too.
+_SENTENCE_START_RE = re.compile(
+    r"(?:^|[.!?…。！？:：;；\n\-–—]|[\"“「『‘'(（\[【])[\s，、,]*$"
+)
+_PRECEDING_FILLERS_RE = re.compile(
+    r"(?:\b(?:" + "|".join(_EN_FILLER_WORDS) + r")\b[\s,]*)+$",
     flags=re.IGNORECASE,
 )
 
+
+def _strip_en_filler(m: re.Match) -> str:
+    """Replacement for an _EN_FILLER_RE match: nothing if the filler is a
+    hesitation, else the match as is. The rules are above _EN_FILLER_RE.
+    """
+    filler = m.group(1)
+    before = m.string[:m.start()]
+    if filler.islower():
+        if filler in _EN_UNIT_FILLERS and _AFTER_NUMBER_RE.search(before):
+            return m.group(0)
+        if filler == "mm" and _AFTER_NUMBER_WORD_RE.search(before):
+            return m.group(0)
+        return ""
+    if filler.istitle() and _SENTENCE_START_RE.search(
+            _PRECEDING_FILLERS_RE.sub("", before)):
+        return ""
+    return m.group(0)
+
+
+# CRITICAL: languages in which some of _EN_FILLER_WORDS are everyday words.
+# They are cased like a hesitation, lowercase inside a sentence and
+# capitalised at its start, so the case rules above can't save them:
+# German "wir treffen uns um 5 Uhr" (at) and "er kommt" (he), Dutch "er
+# is" (there is), Portuguese "tenho um carro" (a), Danish "det er godt"
+# (is), Swedish "jag ser er" (you), Turkish "er geç" (sooner or later). In
+# a transcript in one of these, those words are kept; the other
+# hesitations still go, since "uh" and "uhm" are how the ASR writes a
+# Dutch hesitation and "hmm" is one everywhere.
+# Any other language keeps the whole rule, and so does an unknown one. In
+# Chinese or Russian text a Latin "um" is an English hesitation ("嗯 um
+# 我觉得"), and in the ASR's other Latin-script languages these are at most
+# interjections or rare words.
+_EN_FILLERS_ARE_WORDS_IN = {
+    "danish": frozenset(("er",)),
+    "dutch": frozenset(("er",)),
+    "german": frozenset(("um", "er")),
+    "portuguese": frozenset(("um",)),
+    "swedish": frozenset(("er",)),
+    "turkish": frozenset(("er",)),
+}
+
+
+def _fillers_that_are_words(language: Optional[str]) -> frozenset:
+    """The English fillers that are words in *language*, a name as
+    ASREngine reports it ("German"), or none for an unknown language."""
+    return _EN_FILLERS_ARE_WORDS_IN.get((language or "").casefold(), frozenset())
+
+
 # Stuttering: same word repeated 2+ times with whitespace.
 # English: "I I want" -> "I want"; "the the cat" -> "the cat".
-# CRITICAL: restricted to ASCII letters ([A-Za-z]+), NOT \w. Using \w would
-# also collapse repeated digits ("buy 2 2 apples" -> "buy 2 apples", a spoken
-# PIN "1 1 2" -> "1 2") and spaced CJK reduplication ("好 好 学习" -> "好 学习",
-# destroying 好好学习) — real data loss. CJK stutters are handled separately and
-# conservatively by _CN_STUTTER_RE; digits are intentionally left alone.
-_EN_STUTTER_RE = re.compile(r"\b([A-Za-z]+)(?:\s+\1\b)+", flags=re.IGNORECASE)
+# CRITICAL: only the words in _EN_STUTTER_WORDS are collapsed. People repeat
+# plenty of words on purpose, and collapsing those deletes what they said:
+# dictated numbers ("one three eight zero zero ..." lost digits), years
+# ("twenty twenty"), spelled letters ("J O H N N Y"), emphasis ("very very",
+# "no no no"), names ("Walla Walla", "Fei Fei") and grammatical doubles
+# ("had had", "I know that that is"). That list has no end, but real
+# stutters cluster on a few function words, so like _CN_STUTTER_RE this is
+# a safelist of words whose doubling is virtually always a stutter:
+# articles, conjunctions, prepositions and the pronouns that are only ever
+# subjects. "it" and "you" are left out because they also end clauses, and
+# ASR often drops the comma before the next one ("I love it it's great").
+# Any other repeat is left for the LLM, which has the context to judge it
+# (SYSTEM_PROMPT rule E3).
+# ASCII letters only, so repeated digits ("1 1 2") and spaced CJK
+# reduplication ("好 好 学习") are never collapsed; CJK stutters are handled
+# separately and conservatively by _CN_STUTTER_RE.
+_EN_STUTTER_WORDS = (
+    "i", "we", "he", "she", "they",
+    "a", "an", "the",
+    "and", "but", "or", "if",
+    "to", "of", "for", "with", "from",
+)
+_EN_STUTTER_RE = re.compile(
+    r"\b(" + "|".join(_EN_STUTTER_WORDS) + r")(?:\s+\1\b)+",
+    flags=re.IGNORECASE,
+)
+
+
+def _collapse_en_stutter(m: re.Match) -> str:
+    """Replacement for an _EN_STUTTER_RE match: the word once.
+
+    A capitalised repeat is a spelled letter, acronym or name ("I got A A
+    B", "An An"), not a stutter, so the match is kept as is. The pronoun I
+    is always capitalised and is exempt, which means a spelled "I I" (as in
+    "F U J I I") still collapses; that is rare enough to accept.
+    """
+    first, *repeats = m.group(0).split()
+    if first.lower() != "i" and not all(r.islower() for r in repeats):
+        return m.group(0)
+    return first
 
 # Chinese single-char stuttering. CRITICAL: Cannot blanket-collapse
 # any duplicated CJK char — that would corrupt legitimate compounds like
@@ -78,12 +217,18 @@ _WS_RE = re.compile(r"[ \t]{2,}")
 _LEADING_PUNCT_RE = re.compile(r"^[\s，、,]+")
 
 
-def strip_filler_words(text: str) -> str:
+def strip_filler_words(text: str, language: Optional[str] = None) -> str:
     """Remove obvious filler words and stutters from ASR text.
 
     Safe to call on any string in any language; rules are conservative
     and language-detect themselves. Returns the original text unchanged
     if no fillers are found. Never raises.
+
+    The English filler rule can't tell from the text alone that "um" is
+    German for "at", so pass the transcript's *language* as ASREngine
+    reports it ("German"). The fillers that are words in that language
+    (_EN_FILLERS_ARE_WORDS_IN) are kept; the rest still go, as does
+    everything for any other language or for None.
     """
     if not text:
         return text
@@ -98,14 +243,19 @@ def strip_filler_words(text: str) -> str:
     # 2. Leading Chinese hesitation at utterance start.
     out = _CN_HESITATION_LEADING_RE.sub("", out)
 
-    # 3. English filler words (um/uh/er/ah/hmm/mm).
-    out = _EN_FILLER_RE.sub("", out)
+    # 3. English filler words (um/uh/er/ah/hmm/mm), except the ones that
+    #    are words in the transcript's language.
+    words = _fillers_that_are_words(language)
+    out = _EN_FILLER_RE.sub(
+        lambda m: m.group(0) if m.group(1).lower() in words else _strip_en_filler(m),
+        out,
+    )
 
     # 4. Chinese single-char stutter (我我想 -> 我想).
     out = _CN_STUTTER_RE.sub(r"\1", out)
 
     # 5. English word stutter (I I -> I).
-    out = _EN_STUTTER_RE.sub(r"\1", out)
+    out = _EN_STUTTER_RE.sub(_collapse_en_stutter, out)
 
     # 6. Tidy up duplicate punctuation and whitespace left behind.
     out = _CN_PUNCT_DUP_RE.sub(r"\1", out)
@@ -115,11 +265,12 @@ def strip_filler_words(text: str) -> str:
     return out.strip()
 
 
-def has_filler_words(text: str) -> bool:
+def has_filler_words(text: str, language: Optional[str] = None) -> bool:
     """Cheap predicate: does this text contain anything we'd strip?
 
     Useful for short-circuiting the postprocess call when the input is
-    already clean (saves a regex pass on hot paths).
+    already clean (saves a regex pass on hot paths). Pass the same
+    *language* as to strip_filler_words.
     """
     if not text:
         return False
@@ -127,10 +278,13 @@ def has_filler_words(text: str) -> bool:
         return True
     if _CN_HESITATION_LEADING_RE.search(text):
         return True
-    if _EN_FILLER_RE.search(text):
-        return True
+    words = _fillers_that_are_words(language)
+    for m in _EN_FILLER_RE.finditer(text):
+        if m.group(1).lower() not in words and _strip_en_filler(m) != m.group(0):
+            return True
     if _CN_STUTTER_RE.search(text):
         return True
-    if _EN_STUTTER_RE.search(text):
-        return True
+    for m in _EN_STUTTER_RE.finditer(text):
+        if _collapse_en_stutter(m) != m.group(0):
+            return True
     return False

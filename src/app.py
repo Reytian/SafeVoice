@@ -1071,12 +1071,14 @@ class SafeVoiceApp(rumps.App):
                         prompt = self._active_mode.render_prompt(stripped)
                         logger.info("Mode '%s' LLM starting...", self._active_mode.name)
                         # Check speculative cache first. It only counts if it
-                        # was made with this mode's prompt and guards: the
-                        # mode may have changed since the speculative pass.
+                        # was made with this mode's prompt and guards (the
+                        # mode may have changed since the speculative pass)
+                        # and for the language the ASR reports now.
                         cached = self._llm.get_speculative_result(
                             stripped, custom_prompt=prompt,
                             allow_script_change=self._mode_allows_translation(),
                             echo_questions=self._mode_echoes_questions(),
+                            language=lang,
                         )
                         if cached:
                             logger.info("Using speculative result")
@@ -1090,6 +1092,7 @@ class SafeVoiceApp(rumps.App):
                                 text, custom_prompt=prompt,
                                 allow_script_change=self._mode_allows_translation(),
                                 echo_questions=self._mode_echoes_questions(),
+                                language=lang,
                             )
                         self._overlay.update_text(text)
                         logger.info("Mode result: %s", redact(text))
@@ -1098,7 +1101,7 @@ class SafeVoiceApp(rumps.App):
                         self._overlay.set_status("processing")
                         self._update_status("Cleaning up...")
                         logger.info("LLM cleanup starting...")
-                        cleaned = self._llm.cleanup(text)
+                        cleaned = self._llm.cleanup(text, language=lang)
                         logger.info("LLM result: %r", cleaned)
                         if cleaned != text:
                             print(f"[SafeVoice] LLM: {redact(text)} -> {redact(cleaned)}")
@@ -1118,7 +1121,7 @@ class SafeVoiceApp(rumps.App):
                             logger.info(
                                 "LLM unavailable; using rule-strip only"
                             )
-                        rule_cleaned = strip_filler_words(text)
+                        rule_cleaned = strip_filler_words(text, language=lang)
                         if rule_cleaned != text:
                             logger.info(
                                 "Rule-strip: %s -> %s", redact(text), redact(rule_cleaned)
@@ -1231,7 +1234,7 @@ class SafeVoiceApp(rumps.App):
                     continue
                 try:
                     cleaned = audio_preprocess.normalize_audio(audio_so_far)
-                    text, _ = self._asr.transcribe(cleaned)
+                    text, lang = self._asr.transcribe(cleaned)
                     if not text.strip():
                         continue
                     text = self._vocabulary.apply_snippets(text)
@@ -1246,6 +1249,7 @@ class SafeVoiceApp(rumps.App):
                             text.strip(), custom_prompt=prompt,
                             allow_script_change=self._mode_allows_translation(),
                             echo_questions=self._mode_echoes_questions(),
+                            language=lang,
                         )
                 except Exception as e:
                     logger.debug("Speculative ASR failed: %s", e)
