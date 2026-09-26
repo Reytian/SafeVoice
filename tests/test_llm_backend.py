@@ -145,6 +145,24 @@ def test_cleanup_truncation_falls_back_to_rule_strip():
     assert not out.startswith("um")  # rule strip still applied
 
 
+def test_cleanup_keeps_every_dictated_digit():
+    # Regression: the rule-strip collapsed "zero zero", so the model never
+    # saw those digits and a rejected cleanup pasted the number short.
+    from src.llm_cleanup import LLMCleanup
+    raw = "my number is one three eight zero zero one three eight zero zero zero"
+    sent = []
+
+    class _Recording(_FakeBackend):
+        def chat(self, system_prompt, user_message):
+            sent.append(user_message)
+            return super().chat(system_prompt, user_message)
+
+    # The model translates the number, which the script guard rejects.
+    llm = LLMCleanup(backend=_Recording(reply="我的号码是一三八零零一三八零零零。"))
+    assert llm.cleanup(raw) == raw
+    assert sent == [raw]
+
+
 def test_custom_path_rejects_unrequested_translation():
     from src.llm_cleanup import LLMCleanup
     # Formal-writing style mode, but the model translated the Chinese input.

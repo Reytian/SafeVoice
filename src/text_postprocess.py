@@ -19,7 +19,9 @@ Conservative scope:
   droppable in any context.
 - Common English hesitations (um/uh/er/ah/erm/uhh) — word-boundary matched
   so "umbrella" / "ahead" / "around" stay intact.
-- Stuttering: "I I want" -> "I want", "我我想" -> "我想"
+- Stuttering on a safelist of words: "I I want" -> "I want", "我我想" -> "我想".
+  Words people repeat on purpose ("zero zero", "very very", "no no no")
+  are kept.
 - Ambiguous discourse markers (那个 / 这个 / 就是 / 然后 / like / you know)
   are LEFT ALONE here and handled by the LLM with full context. Stripping
   them with regex breaks meaningful sentences ("这个产品" must keep 这个).
@@ -55,12 +57,46 @@ _EN_FILLER_RE = re.compile(
 
 # Stuttering: same word repeated 2+ times with whitespace.
 # English: "I I want" -> "I want"; "the the cat" -> "the cat".
-# CRITICAL: restricted to ASCII letters ([A-Za-z]+), NOT \w. Using \w would
-# also collapse repeated digits ("buy 2 2 apples" -> "buy 2 apples", a spoken
-# PIN "1 1 2" -> "1 2") and spaced CJK reduplication ("好 好 学习" -> "好 学习",
-# destroying 好好学习) — real data loss. CJK stutters are handled separately and
-# conservatively by _CN_STUTTER_RE; digits are intentionally left alone.
-_EN_STUTTER_RE = re.compile(r"\b([A-Za-z]+)(?:\s+\1\b)+", flags=re.IGNORECASE)
+# CRITICAL: only the words in _EN_STUTTER_WORDS are collapsed. People repeat
+# plenty of words on purpose, and collapsing those deletes what they said:
+# dictated numbers ("one three eight zero zero ..." lost digits), years
+# ("twenty twenty"), spelled letters ("J O H N N Y"), emphasis ("very very",
+# "no no no"), names ("Walla Walla", "Fei Fei") and grammatical doubles
+# ("had had", "I know that that is"). That list has no end, but real
+# stutters cluster on a few function words, so like _CN_STUTTER_RE this is
+# a safelist of words whose doubling is virtually always a stutter:
+# articles, conjunctions, prepositions and the pronouns that are only ever
+# subjects. "it" and "you" are left out because they also end clauses, and
+# ASR often drops the comma before the next one ("I love it it's great").
+# Any other repeat is left for the LLM, which has the context to judge it
+# (SYSTEM_PROMPT rule E3).
+# ASCII letters only, so repeated digits ("1 1 2") and spaced CJK
+# reduplication ("好 好 学习") are never collapsed; CJK stutters are handled
+# separately and conservatively by _CN_STUTTER_RE.
+_EN_STUTTER_WORDS = (
+    "i", "we", "he", "she", "they",
+    "a", "an", "the",
+    "and", "but", "or", "if",
+    "to", "of", "for", "with", "from",
+)
+_EN_STUTTER_RE = re.compile(
+    r"\b(" + "|".join(_EN_STUTTER_WORDS) + r")(?:\s+\1\b)+",
+    flags=re.IGNORECASE,
+)
+
+
+def _collapse_en_stutter(m: re.Match) -> str:
+    """Replacement for an _EN_STUTTER_RE match: the word once.
+
+    A capitalised repeat is a spelled letter, acronym or name ("I got A A
+    B", "An An"), not a stutter, so the match is kept as is. The pronoun I
+    is always capitalised and is exempt, which means a spelled "I I" (as in
+    "F U J I I") still collapses; that is rare enough to accept.
+    """
+    first, *repeats = m.group(0).split()
+    if first.lower() != "i" and not all(r.islower() for r in repeats):
+        return m.group(0)
+    return first
 
 # Chinese single-char stuttering. CRITICAL: Cannot blanket-collapse
 # any duplicated CJK char — that would corrupt legitimate compounds like
@@ -105,7 +141,7 @@ def strip_filler_words(text: str) -> str:
     out = _CN_STUTTER_RE.sub(r"\1", out)
 
     # 5. English word stutter (I I -> I).
-    out = _EN_STUTTER_RE.sub(r"\1", out)
+    out = _EN_STUTTER_RE.sub(_collapse_en_stutter, out)
 
     # 6. Tidy up duplicate punctuation and whitespace left behind.
     out = _CN_PUNCT_DUP_RE.sub(r"\1", out)
@@ -131,6 +167,7 @@ def has_filler_words(text: str) -> bool:
         return True
     if _CN_STUTTER_RE.search(text):
         return True
-    if _EN_STUTTER_RE.search(text):
-        return True
+    for m in _EN_STUTTER_RE.finditer(text):
+        if _collapse_en_stutter(m) != m.group(0):
+            return True
     return False
