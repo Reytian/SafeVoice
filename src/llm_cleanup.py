@@ -12,7 +12,7 @@ from typing import Optional
 
 from .llm_backend import LLMBackend, LLMTruncatedError, OllamaBackend
 from .privacy import redact
-from .text_postprocess import strip_filler_words
+from .text_postprocess import _EN_FILLER_WORDS, strip_filler_words
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,9 @@ R6. NEVER drop preambles, scene-setting, or self-narration as if they were fille
 
 EDITS YOU MAY MAKE (and nothing else):
 
-E1. Remove pure hesitation sounds: um, uh, er, ah, hmm, 嗯, 啊, 呃, 哦, 哎, 唉.
+E1. Remove pure hesitation sounds: um, uh, er, ah, hmm, 嗯, 啊, 呃, 哦, 哎, 唉. Keep the same letters when they are a word: "the ER", "5 mm", "DD MM YYYY", "an HMM", "uh-huh".
 E2. Remove filler discourse markers when clearly interjections, not when meaningful. "这个产品" keeps 这个; "这个，就是，我想说" drops 这个 and 就是.
-E3. Collapse stutters: "I I want" -> "I want"; "我我想" -> "我想".
+E3. Collapse a stuttered word: "I I want" -> "I want"; "我我想" -> "我想". A repeat the speaker meant is NOT a stutter and stays exactly as said, word for word: repeated numbers ("one one two three", "ten ten", "零零"), spelled letters ("J O H N N Y"), and emphasis ("very very", "no no no").
 E4. Collapse self-corrections: when the speaker openly retracts ("no wait", "I mean", "sorry", "啊不对", "不对不对", "不是", "应该是", "我是说", "等等", "哦不是"), drop the retracted part, keep the replacement. Do NOT add bridging words.
 E5. Fix obvious typos, capitalization, and punctuation. Add a final period/句号 if missing. Use Chinese punctuation for Chinese text, ASCII for English.
 E6. Merge spurious ASR sentence breaks: "这个。新的功能。不能用。" -> "这个新的功能不能用。"
@@ -209,11 +209,14 @@ _LATIN_LETTER_RE = re.compile(r"[A-Za-zÀ-ſ]")  # ASCII + Latin-1 Supplement (�
 _LATIN_WORD_RE = re.compile(r"[A-Za-zÀ-ſ]{3,}")  # 3+ char Latin words
 # English fillers in code-switched speech ("okay so basically 我们下周...").
 # Dropping them is filler removal (rule E2), not translation.
+# The hesitation spellings come from strip_filler_words, which keeps a
+# capitalised one inside a sentence ("好的，Uhh, 我觉得") in case it is a
+# name or an acronym; a model that drops it is not translating.
 _LATIN_FILLERS = frozenset((
     "okay", "yeah", "yep", "basically", "actually", "literally", "like", "you",
     "know", "well", "right", "just", "really", "kinda", "sorta", "anyway",
-    "alright", "mean", "umm", "uhm", "hmm",
-))
+    "alright", "mean",
+)) | frozenset(_EN_FILLER_WORDS)
 
 
 def _mixed_script_collapsed(input_text: str, output_text: str) -> bool:
@@ -444,6 +447,10 @@ def _english_question(sentence: str) -> bool:
     # Only English text at the very start of the sentence counts.
     lead = _CJK_RE.split(sentence, maxsplit=1)[0]
     words = _EN_WORD_RE.findall(lead.lower().replace("’", "'"))
+    # A stuttered opener asks like the plain one ("is is the store open",
+    # "do do you know"); strip_filler_words collapses only a safelist of
+    # words, so the repeat can still be here.
+    words = [w for i, w in enumerate(words) if i == 0 or w != words[i - 1]]
     while words and words[0] in _EN_LEAD_INS:
         words.pop(0)
     if not words:
@@ -567,6 +574,13 @@ _REPLY_OPENING_RE = re.compile(
 )
 # Ways of saying yes or no that count as the same opening word.
 _SAME_ANSWER_WORD = {"yeah": "yes", "yep": "yes", "yup": "yes", "nope": "no", "nah": "no"}
+# Backchannels strip_filler_words keeps in front of a dictation ("Mm-hmm,
+# I'll send it tonight", "uh-huh, yes that works"). The model drops them, so
+# the output opens with the speaker's next word.
+_LEADING_BACKCHANNEL_RE = re.compile(
+    r"^(?:\W*(?:mm-?hmm|mhm+|uh-?huh|uh-?uh|nuh-?uh|um-?hum|mm-?mm)\b[\s,.!;:]*)+",
+    re.IGNORECASE,
+)
 
 
 def _opens_as_a_reply(input_text: str, output_text: str) -> bool:
@@ -578,6 +592,7 @@ def _opens_as_a_reply(input_text: str, output_text: str) -> bool:
     # "yeah I think so" -> "Yes, I think so."
     phrase = opening.group(1).lower()
     said = re.sub(r"^\W+", "", input_text.replace("’", "'").lower())
+    said = _LEADING_BACKCHANNEL_RE.sub("", said)
     if not phrase.isascii():
         return not said.startswith(phrase)
     said_word = re.match(r"[a-z]+(?:'[a-z]+)?", said)

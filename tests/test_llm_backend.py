@@ -145,6 +145,24 @@ def test_cleanup_truncation_falls_back_to_rule_strip():
     assert not out.startswith("um")  # rule strip still applied
 
 
+def test_cleanup_keeps_every_dictated_digit():
+    # Regression: the rule-strip collapsed "zero zero", so the model never
+    # saw those digits and a rejected cleanup pasted the number short.
+    from src.llm_cleanup import LLMCleanup
+    raw = "my number is one three eight zero zero one three eight zero zero zero"
+    sent = []
+
+    class _Recording(_FakeBackend):
+        def chat(self, system_prompt, user_message):
+            sent.append(user_message)
+            return super().chat(system_prompt, user_message)
+
+    # The model translates the number, which the script guard rejects.
+    llm = LLMCleanup(backend=_Recording(reply="我的号码是一三八零零一三八零零零。"))
+    assert llm.cleanup(raw) == raw
+    assert sent == [raw]
+
+
 def test_custom_path_rejects_unrequested_translation():
     from src.llm_cleanup import LLMCleanup
     # Formal-writing style mode, but the model translated the Chinese input.
@@ -796,3 +814,56 @@ def test_refresh_local_models_falls_back_to_saved_model(monkeypatch):
     )
     settings_window.SettingsWindow._refresh_local_models(window)
     assert popup.titleOfSelectedItem() == "qwen2.5:3b"
+
+
+# --- Review follow-ups to #5 and #7 -----------------------------------------
+# The strip now keeps stuttered non-safelisted words, capitalised
+# hesitations inside a sentence and joined backchannels, so the guards have
+# to see past them.
+
+@pytest.mark.parametrize("text", [
+    "is is the store open on sunday",
+    "do do you know when the meeting starts",
+    "when when when is the deadline",
+    "what what time is it",
+])
+def test_is_question_sees_past_a_stuttered_opener(text):
+    from src.llm_cleanup import _is_question
+    assert _is_question(text)
+
+
+def test_is_question_sees_past_a_stuttered_cleft():
+    from src.llm_cleanup import _is_question
+    assert not _is_question("what what I want to say is that the launch went well")
+
+
+def test_cleanup_rejects_answer_to_a_stuttered_question(caplog):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply="The store is open on Sunday from 9 to 5."))
+    assert llm.cleanup("is is the store open on sunday") == "is is the store open on sunday"
+    assert "answered a dictated question" in caplog.text
+
+
+@pytest.mark.parametrize("raw,cleaned", [
+    ("Mm-hmm, I'll send it tonight", "I'll send it tonight."),
+    ("mm-hmm, yes that works", "Yes, that works."),
+    ("uh-huh, sure, let's do that tomorrow", "Sure, let's do that tomorrow."),
+])
+def test_dropped_leading_backchannel_is_not_a_reply(raw, cleaned):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=cleaned))
+    assert llm.cleanup(raw) == cleaned
+
+
+def test_reply_after_a_backchannel_is_still_caught():
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply="Sure, I'll send it tonight."))
+    assert llm.cleanup("Mm-hmm, send it tonight") == "Mm-hmm, send it tonight"
+
+
+def test_dropped_capitalised_hesitation_in_chinese_is_not_a_translation():
+    from src.llm_cleanup import LLMCleanup
+    raw = "好的，Uhh, 我觉得这个方案可以，我们下周再讨论。"
+    cleaned = "好的，我觉得这个方案可以，我们下周再讨论。"
+    llm = LLMCleanup(backend=_FakeBackend(reply=cleaned))
+    assert llm.cleanup(raw) == cleaned

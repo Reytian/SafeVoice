@@ -19,7 +19,9 @@ Conservative scope:
   droppable in any context.
 - Common English hesitations (um/uh/er/ah/erm/uhh) — word-boundary matched
   so "umbrella" / "ahead" / "around" stay intact.
-- Stuttering: "I I want" -> "I want", "我我想" -> "我想"
+- Stuttering on a safelist of words: "I I want" -> "I want", "我我想" -> "我想".
+  Words people repeat on purpose ("zero zero", "very very", "no no no")
+  are kept.
 - Ambiguous discourse markers (那个 / 这个 / 就是 / 然后 / like / you know)
   are LEFT ALONE here and handled by the LLM with full context. Stripping
   them with regex breaks meaningful sentences ("这个产品" must keep 这个).
@@ -62,9 +64,10 @@ _CN_HESITATION_LEADING_RE = re.compile(rf"^[{_CN_HESITATION_CHARS}]+(?=[^\s，�
 #   HMM", "call Er", "5 Ah"). A sentence may open with a capitalised
 #   hesitation ("Um, so ..."), so there a capitalised filler still goes.
 #   A name like "Er" that opens a sentence goes with it, which is rare.
-# - is not "mm" or "ah" right after a number. Case can't tell these units
-#   from the hesitations, but "5 mm" is millimetres and "5 ah" amp-hours.
-#   After a comma it is a hesitation again: "5, mm, 6".
+# - is not "mm" or "ah" right after a number, or "mm" after a number word.
+#   Case can't tell these units from the hesitations, but "5 mm" and "five
+#   mm" are millimetres and "5 ah" amp-hours. After a comma it is a
+#   hesitation again: "5, mm, 6".
 # A filler joined to a neighbouring word by - / . or : is part of that
 # word ("uh-huh", "mm-hmm", "mm/dd/yyyy", "hh:mm", "5-mm"), so the pattern
 # doesn't match it. Still lost: "mm" as a unit with no number ("in mm").
@@ -73,12 +76,39 @@ _EN_FILLER_RE = re.compile(
     r"(?<!\w[-/.:])\b(" + "|".join(_EN_FILLER_WORDS) + r")\b(?![-/.:]\w)[\s,]*",
     flags=re.IGNORECASE,
 )
+# "mm" and "ah" right after a digit are units ("5 mm", "5 ah"). The ASR
+# writes small numbers as words ("five mm", "twenty five mm", "two point
+# five mm", "half a mm"), so "mm" is a unit after a number word too. "ah"
+# is not: after a number word it is nearly always a hesitation ("one ah
+# two"), and the ASR capitalises amp-hours ("two Ah"), which the case rule
+# keeps.
 _EN_UNIT_FILLERS = ("mm", "ah")
 _AFTER_NUMBER_RE = re.compile(r"\d\s*$")
-# What precedes a filler that opens a sentence: nothing or the end of the
-# last sentence, then spaces and commas. A comma can be what is left of a
-# Chinese hesitation removed before this step ("嗯，Um, so" -> "，Um, so").
-_SENTENCE_START_RE = re.compile(r"(?:^|[.!?…。！？])[\s，、,]*$")
+_EN_NUMBER_WORDS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+    "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+    "thousand", "million", "half", "quarter",
+)
+_AFTER_NUMBER_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(_EN_NUMBER_WORDS) + r")(?:\s+an?)?\s+$",
+    flags=re.IGNORECASE,
+)
+# What precedes a filler that opens a sentence: nothing, the end of the last
+# sentence, a colon, semicolon or dash, or an opening quote or bracket (the
+# ASR writes reported speech as 'She asked, "Ah, what time is it?"' and
+# "my question is: Um, when do we start?"), then spaces and commas. A comma
+# can be what is left of a Chinese hesitation removed before this step
+# ("嗯，Um, so" -> "，Um, so"). Hesitations in front of this one are looked
+# past as well ("Um, Um, so"), since they go too.
+_SENTENCE_START_RE = re.compile(
+    r"(?:^|[.!?…。！？:：;；\n\-–—]|[\"“「『‘'(（\[【])[\s，、,]*$"
+)
+_PRECEDING_FILLERS_RE = re.compile(
+    r"(?:\b(?:" + "|".join(_EN_FILLER_WORDS) + r")\b[\s,]*)+$",
+    flags=re.IGNORECASE,
+)
 
 
 def _strip_en_filler(m: re.Match) -> str:
@@ -90,8 +120,11 @@ def _strip_en_filler(m: re.Match) -> str:
     if filler.islower():
         if filler in _EN_UNIT_FILLERS and _AFTER_NUMBER_RE.search(before):
             return m.group(0)
+        if filler == "mm" and _AFTER_NUMBER_WORD_RE.search(before):
+            return m.group(0)
         return ""
-    if filler.istitle() and _SENTENCE_START_RE.search(before):
+    if filler.istitle() and _SENTENCE_START_RE.search(
+            _PRECEDING_FILLERS_RE.sub("", before)):
         return ""
     return m.group(0)
 
@@ -120,12 +153,46 @@ def _strips_en_fillers(language: Optional[str]) -> bool:
 
 # Stuttering: same word repeated 2+ times with whitespace.
 # English: "I I want" -> "I want"; "the the cat" -> "the cat".
-# CRITICAL: restricted to ASCII letters ([A-Za-z]+), NOT \w. Using \w would
-# also collapse repeated digits ("buy 2 2 apples" -> "buy 2 apples", a spoken
-# PIN "1 1 2" -> "1 2") and spaced CJK reduplication ("好 好 学习" -> "好 学习",
-# destroying 好好学习) — real data loss. CJK stutters are handled separately and
-# conservatively by _CN_STUTTER_RE; digits are intentionally left alone.
-_EN_STUTTER_RE = re.compile(r"\b([A-Za-z]+)(?:\s+\1\b)+", flags=re.IGNORECASE)
+# CRITICAL: only the words in _EN_STUTTER_WORDS are collapsed. People repeat
+# plenty of words on purpose, and collapsing those deletes what they said:
+# dictated numbers ("one three eight zero zero ..." lost digits), years
+# ("twenty twenty"), spelled letters ("J O H N N Y"), emphasis ("very very",
+# "no no no"), names ("Walla Walla", "Fei Fei") and grammatical doubles
+# ("had had", "I know that that is"). That list has no end, but real
+# stutters cluster on a few function words, so like _CN_STUTTER_RE this is
+# a safelist of words whose doubling is virtually always a stutter:
+# articles, conjunctions, prepositions and the pronouns that are only ever
+# subjects. "it" and "you" are left out because they also end clauses, and
+# ASR often drops the comma before the next one ("I love it it's great").
+# Any other repeat is left for the LLM, which has the context to judge it
+# (SYSTEM_PROMPT rule E3).
+# ASCII letters only, so repeated digits ("1 1 2") and spaced CJK
+# reduplication ("好 好 学习") are never collapsed; CJK stutters are handled
+# separately and conservatively by _CN_STUTTER_RE.
+_EN_STUTTER_WORDS = (
+    "i", "we", "he", "she", "they",
+    "a", "an", "the",
+    "and", "but", "or", "if",
+    "to", "of", "for", "with", "from",
+)
+_EN_STUTTER_RE = re.compile(
+    r"\b(" + "|".join(_EN_STUTTER_WORDS) + r")(?:\s+\1\b)+",
+    flags=re.IGNORECASE,
+)
+
+
+def _collapse_en_stutter(m: re.Match) -> str:
+    """Replacement for an _EN_STUTTER_RE match: the word once.
+
+    A capitalised repeat is a spelled letter, acronym or name ("I got A A
+    B", "An An"), not a stutter, so the match is kept as is. The pronoun I
+    is always capitalised and is exempt, which means a spelled "I I" (as in
+    "F U J I I") still collapses; that is rare enough to accept.
+    """
+    first, *repeats = m.group(0).split()
+    if first.lower() != "i" and not all(r.islower() for r in repeats):
+        return m.group(0)
+    return first
 
 # Chinese single-char stuttering. CRITICAL: Cannot blanket-collapse
 # any duplicated CJK char — that would corrupt legitimate compounds like
@@ -177,7 +244,7 @@ def strip_filler_words(text: str, language: Optional[str] = None) -> str:
     out = _CN_STUTTER_RE.sub(r"\1", out)
 
     # 5. English word stutter (I I -> I).
-    out = _EN_STUTTER_RE.sub(r"\1", out)
+    out = _EN_STUTTER_RE.sub(_collapse_en_stutter, out)
 
     # 6. Tidy up duplicate punctuation and whitespace left behind.
     out = _CN_PUNCT_DUP_RE.sub(r"\1", out)
@@ -206,6 +273,7 @@ def has_filler_words(text: str, language: Optional[str] = None) -> bool:
                 return True
     if _CN_STUTTER_RE.search(text):
         return True
-    if _EN_STUTTER_RE.search(text):
-        return True
+    for m in _EN_STUTTER_RE.finditer(text):
+        if _collapse_en_stutter(m) != m.group(0):
+            return True
     return False
