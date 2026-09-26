@@ -881,3 +881,88 @@ def test_cleanup_rejects_answer_phrased_as_pseudo_cleft(caplog):
     llm = LLMCleanup(backend=_FakeBackend(reply="What caused the outage was a bad deploy."))
     assert llm.cleanup("what caused the outage") == "what caused the outage"
     assert "answered a dictated question" in caplog.text
+
+
+# --- A "please" the model adds only excuses a request ---------------------
+# Confirmed on 9324033 and 2fff3b6: an output that added nothing but "please"
+# or 请 passed the question guard in every mode, even when the speaker asked
+# something besides a request. So a yes/no question answered by reordering
+# its own words was pasted. Now every question has to be a request, and the
+# output has to drop each request's modal.
+
+@pytest.mark.parametrize("sentence,modal", [
+    ("OK so could you send it", "could"), ("那你能帮我看一下吗", "能"),
+    ("能否在周五前完成这个报告", "能否"), ("可以帮我订一张机票吗", "可以"),
+    # Not requests: a question, leave asked, and 请 that isn't "please"
+    ("Is the meeting at three?", None), ("明天开会吗", None), ("可以进来吗", None),
+    ("请问明天开会吗", None), ("你明天请假吗", None),
+])
+def test_request_modal(sentence, modal):
+    from src.llm_cleanup import _request_modal
+    assert _request_modal(sentence) == modal
+
+
+# Answers that added nothing but a polite word, so the guard let them through.
+_ANSWERS_EXCUSED_BY_PLEASE = [
+    # A question beside a request, dictated as two sentences or run together
+    ("Is the meeting at three? Can you confirm?", "The meeting is at three. Please confirm."),
+    ("明天开会吗？你能确认一下吗", "明天开会。请确认一下。"),
+    ("Is the meeting at three, can you confirm?", "The meeting is at three. Please confirm."),
+    ("明天开会吗你能确认一下吗", "明天开会，请确认一下。"),
+    ("Could you confirm? Is it at three?", "Please confirm. It is at three."),
+    # 请假 is neither a request nor "please"
+    ("你明天请假吗？你能帮我看一下吗", "你明天请假。请帮我看一下。"),
+    # A question that opens like a request, answered by keeping its modal
+    ("Will you be at the meeting? Can you bring the file?",
+     "You will be at the meeting. Please bring the file."),
+    ("Will you be at the meeting? Can you please bring the file?",
+     "You will be at the meeting. Please bring the file."),
+    ("你能来吗？你能带一下文件吗", "你能来。请带一下文件。"),
+    ("你能休假吗", "能请假。"),
+    # Without 你/您, 可以 asks leave, and 请 grants it
+    ("可以进来吗", "请进来。"),
+]
+
+
+@pytest.mark.parametrize("raw,answer", _ANSWERS_EXCUSED_BY_PLEASE)
+def test_cleanup_rejects_answer_excused_by_please(raw, answer, caplog):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=answer))
+    assert llm.cleanup(raw) == raw
+    assert "answered a dictated question" in caplog.text
+
+
+@pytest.mark.parametrize("raw,answer", _ANSWERS_EXCUSED_BY_PLEASE)
+def test_styled_path_rejects_answer_excused_by_please(raw, answer, caplog):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=answer))
+    assert _cleanup_like_app(llm, _mode("Formal Writing"), raw) == raw
+    assert "answered a dictated question" in caplog.text
+
+
+# Requests turned into polite commands. They must still be pasted.
+_REQUESTS_TURNED_INTO_COMMANDS = [
+    ("你能帮我看一下吗", "请帮我看一下。"),
+    ("能否在周五前完成这个报告", "请在周五前完成这个报告。"),
+    ("那你们能不能在周五前交付", "请在周五前交付。"),
+    ("可以帮我订一张机票吗", "请帮我订一张机票。"),
+    ("你能帮我看一下吗？明天要交", "请帮我看一下，明天要交。"),
+    ("Can you send it? Could you also review it?", "Please send it. Please also review it."),
+    # 请 inside a word, beside the 请 that was added
+    ("您可以帮我申请一下吗", "请帮我申请一下。"),
+    ("你能帮我请假吗", "请帮我请假。"),
+]
+
+
+@pytest.mark.parametrize("raw,command", _REQUESTS_TURNED_INTO_COMMANDS)
+def test_cleanup_keeps_request_turned_into_command(raw, command):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=command))
+    assert llm.cleanup(raw) == command
+
+
+@pytest.mark.parametrize("raw,command", _REQUESTS_TURNED_INTO_COMMANDS)
+def test_styled_path_keeps_request_turned_into_command(raw, command):
+    from src.llm_cleanup import LLMCleanup
+    llm = LLMCleanup(backend=_FakeBackend(reply=command))
+    assert _cleanup_like_app(llm, _mode("Formal Writing"), raw) == command

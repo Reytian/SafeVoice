@@ -602,6 +602,20 @@ _POLITE_UNITS = frozenset(("please", "kindly", "请", "請"))
 # The modal a command drops from a request, along with "you": "could you
 # please review it" -> "Please review it."
 _EN_REQUEST_MODALS = frozenset(("can", "could", "would", "will"))
+# A Chinese request opens with a modal after 你/您 ("你能帮我看一下吗", "您可否
+# 提供一份报价"), with the formal 能否/可否 alone ("能否在周五前完成这个报告"), or
+# with a modal and "for me" ("能帮我看一下吗", "可以给我一份吗"). Without 你/您 or
+# "for me", 能/可以 as often asks leave, which 请 would grant: "可以进来吗" ->
+# "请进来。"
+_CJK_REQUEST_RE = re.compile(
+    r"(?P<you>[你您](?:们|們)?)?(?P<modal>能不能|可不可以|能否|可否|能|可以)"
+)
+_CJK_FOR_ME_RE = re.compile(r"[帮幫给給替为為]我|[帮幫]忙")
+# Words people say before a Chinese request: "那你能…", "好的，你能…".
+_CJK_LEAD_INS_RE = re.compile(
+    r"(?:(?:那[么麼个個]?|好的?|对了|對了|另外|还有|還有|而且|然后|然後|所以"
+    r"|但是|不过|不過)[\s，,、]*)*"
+)
 # A 吗 the utterance runs on after is where a misheard 嘛 sits ("这样就挺好的
 # 吗不用再改了"). A final 吗 ("明天开会吗") asks a real question.
 _MA_GOES_ON_RE = re.compile(
@@ -678,24 +692,49 @@ def _echoes_the_question(input_text: str, output_text: str) -> bool:
     return False
 
 
-def _opens_a_request(sentence: str) -> bool:
-    """Does this sentence open with "can you", "could you", "would you" or
-    "will you", past any lead-ins ("OK can you...")?"""
-    words = _EN_WORD_RE.findall(sentence.lower().replace("’", "'"))
+def _request_modal(sentence: str) -> Optional[str]:
+    """The modal this sentence opens a request with, past any lead-ins: "can"
+    for "OK can you send it", 能 for "那你能帮我看一下吗", 能否 for "能否在周五前
+    完成这个报告". None if it doesn't open with a request."""
+    lead = _CJK_RE.split(sentence, maxsplit=1)[0]
+    words = _EN_WORD_RE.findall(lead.lower().replace("’", "'"))
     while words and words[0] in _EN_LEAD_INS:
         words.pop(0)
-    return len(words) > 1 and words[0] in _EN_REQUEST_MODALS and words[1] == "you"
+    if words:
+        if len(words) > 1 and words[0] in _EN_REQUEST_MODALS and words[1] == "you":
+            return words[0]
+        return None
+    rest = sentence[len(lead):]
+    rest = rest[_CJK_LEAD_INS_RE.match(rest).end():]
+    request = _CJK_REQUEST_RE.match(rest)
+    if request and (request.group("you") or request.group("modal") in ("能否", "可否")
+                    or _CJK_FOR_ME_RE.match(rest, request.end())):
+        return request.group("modal")
+    return None
+
+
+def _requests_became_commands(input_text: str, output_text: str) -> bool:
+    """Is every question the speaker asked a request, and does the output
+    drop the modal of each one? Otherwise the same words can answer a
+    question, and a polite word doesn't explain why it is gone ("Is the
+    meeting at three? Can you confirm?" -> "The meeting is at three. Please
+    confirm.", "Will you be there? Can you bring it?" -> "You will be there.
+    Please bring it.")."""
+    modals = Counter()
+    for sentence in _sentences(input_text):
+        if _sentence_is_question(sentence):
+            modal = _request_modal(sentence)
+            if modal is None:
+                return False
+            modals += _content_units(modal)
+    dropped = _content_units(input_text) - _content_units(output_text)
+    return not modals - dropped
 
 
 def _only_dropped_the_request(input_text: str, output_text: str) -> bool:
     """Is the output a polite command that keeps all the speaker's words but
     the "can you" of their request? ("can you please send it" -> "Please send
-    it.") Every question the speaker asked has to be such a request, or the
-    same words could answer it ("Is the meeting at three? Can you confirm,
-    please?" -> "The meeting is at three. Please confirm.")."""
-    if not all(_opens_a_request(sentence) for sentence in _sentences(input_text)
-               if _sentence_is_question(sentence)):
-        return False
+    it.")"""
     output_units = _content_units(output_text)
     dropped = _content_units(input_text) - output_units
     return (any(unit in _POLITE_UNITS for unit in output_units)
@@ -731,11 +770,13 @@ def _question_became_statement(input_text: str, output_text: str,
             and _MA_GOES_ON_RE.search(input_text) and not _is_question(as_emphasis)):
         return False
     # A request turned into a polite command: "can you send me the report by
-    # friday" -> "Please send me the report by Friday." When the speaker said
-    # "please" already, nothing is added and the command only drops the "can
-    # you": "can you please send it" -> "Please send it."
-    if set(added) <= _POLITE_UNITS and (
-            added or _only_dropped_the_request(input_text, output_text)):
+    # friday" -> "Please send me the report by Friday.", "你能帮我看一下吗" ->
+    # "请帮我看一下。" When the speaker said "please" already, nothing is added
+    # and the command only drops the "can you": "can you please send it" ->
+    # "Please send it."
+    if (set(added) <= _POLITE_UNITS
+            and _requests_became_commands(input_text, output_text)
+            and (added or _only_dropped_the_request(input_text, output_text))):
         return False
     return True
 
