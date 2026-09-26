@@ -378,6 +378,37 @@ _EN_PERSONAL_PRONOUNS = frozenset(("i", "you", "we", "they"))
 # Subjects of a clause that opens with a wh-word without asking anything:
 # "what we need is...", "when you get a chance...".
 _EN_CLEFT_SUBJECTS = _EN_PERSONAL_PRONOUNS | {"he", "she", "it"}
+# Verbs "what" can be the subject of in a statement that opens like a
+# question: "what happened was the server crashed", "what matters is that we
+# ship on time", "what surprised me was the price". Forms often used as
+# plural nouns after "what" ("what changes is he making", "what drives is it
+# using") are left out.
+_EN_CLEFT_VERBS = frozenset((
+    "happened", "happens", "matters", "mattered", "counts", "remains",
+    "surprised", "surprises", "struck", "strikes", "bothered", "bothers",
+    "worried", "worries", "annoyed", "annoys", "frustrated", "frustrates",
+    "impressed", "impresses", "amazed", "amazes", "scared", "scares",
+    "concerned", "interested", "helped", "helps", "worked", "works",
+    "changed", "caused", "causes", "made", "makes", "got", "gets", "kept",
+    "keeps", "led", "went", "came", "comes", "stood", "stands", "stuck",
+    "seemed", "seems", "needed", "needs", "fixed", "broke", "failed",
+    "saved", "saves", "killed", "kills", "took", "takes", "convinced",
+    "caught", "drove",
+))
+# Words that open a clause of their own. An is/was after one of them belongs
+# to that clause, so the sentence still asks: "what happens when the queue is
+# full", "what happened to the build that was failing", "what makes you think
+# it is broken", "what happens every time it is run".
+_EN_CLAUSE_OPENERS = _EN_QUESTION_WORDS | {
+    "i", "he", "she", "we", "they", "that", "if", "whether", "because",
+    "since", "after", "before", "until", "till", "unless", "once", "while",
+    "as", "although", "time", "think", "thought", "say", "said", "believe",
+    "feel", "sure",
+}
+# Subjects that make the is/was after a verb's clause ask a question of its
+# own: "what matters more is it speed or quality", "what happened was he
+# fired".
+_EN_INVERTED_SUBJECTS = frozenset(("it", "there", "this", "he", "she"))
 _EN_ASKING = frozenset(("know", "wonder", "wondering", "ask", "asking"))
 # Words people say before a question: "so what's next", "OK, can you...".
 _EN_LEAD_INS = frozenset((
@@ -438,6 +469,41 @@ def _content_units(text: str) -> Counter:
                    for unit in (u.lower() for u in _UNIT_RE.findall(text)))
 
 
+def _asks_later(words: list) -> bool:
+    """Does a question start somewhere in these words? ("...so what do we do
+    now", "...is that normal"). As at the start of a sentence, "do" and "have"
+    only ask with a personal pronoun, so "...that we do it right" doesn't."""
+    for word, nxt in zip(words, words[1:]):
+        if word in _EN_COMMAND_AUXILIARIES:
+            if nxt in _EN_PERSONAL_PRONOUNS:
+                return True
+        elif word in _EN_AUXILIARIES and (nxt in _EN_CLEFT_SUBJECTS
+                                          or nxt in ("that", "this")):
+            return True
+    return False
+
+
+def _opens_a_cleft(words: list) -> bool:
+    """Do these words, which start with a wh-word, open a clause that a later
+    is/was makes the subject of a statement? ("what we need is...", "what
+    happened was...")"""
+    after = words[1] if len(words) > 1 else ""
+    if after in _EN_CLEFT_SUBJECTS:
+        return any(word in ("is", "was") for word in words[2:])
+    if words[0] != "what" or after not in _EN_CLEFT_VERBS:
+        return False
+    # Unlike "what we need", "what happened" asks on its own. It only makes a
+    # statement when an is/was follows the verb's clause, and what comes after
+    # the is/was doesn't ask something itself.
+    for i in range(2, len(words) - 1):
+        if words[i] in _EN_CLAUSE_OPENERS:
+            return False
+        if words[i] in ("is", "was"):
+            rest = words[i + 1:]
+            return rest[0] not in _EN_INVERTED_SUBJECTS and not _asks_later(rest)
+    return False
+
+
 def _english_question(sentence: str) -> bool:
     """Does this sentence open like an English question? ("what's...",
     "does the store...", "can I...", "OK so how...")"""
@@ -452,11 +518,11 @@ def _english_question(sentence: str) -> bool:
     after = words[1] if len(words) > 1 else ""
     wh_word = first.split("'")[0]  # "what's" -> "what"
     if wh_word in _EN_QUESTION_WORDS:
-        if (first == wh_word and after in _EN_CLEFT_SUBJECTS
-                and any(word in ("is", "was") for word in words[2:])
+        if (first == wh_word and _opens_a_cleft(words)
                 and not any(word in _EN_ASKING for word in words)):
-            # "what we need is more time", "how he did it was clever"; but
-            # "what I want to know is when you'll arrive" still asks.
+            # "what we need is more time", "how he did it was clever", "what
+            # happened was the server crashed"; but "what I want to know is
+            # when you'll arrive" still asks.
             return False
         # "when is it?", "where's the file?" and "where to go for dinner"
         # ask; "when you get a chance, send it" and "where we left off" only
@@ -533,6 +599,9 @@ _MIN_ECHO_SHARE = 1 / 3
 # Words that turn a request into a polite command without saying anything
 # new: "can you send me the report" -> "Please send me the report."
 _POLITE_UNITS = frozenset(("please", "kindly", "请", "請"))
+# The modal a command drops from a request, along with "you": "could you
+# please review it" -> "Please review it."
+_EN_REQUEST_MODALS = frozenset(("can", "could", "would", "will"))
 # A 吗 the utterance runs on after is where a misheard 嘛 sits ("这样就挺好的
 # 吗不用再改了"). A final 吗 ("明天开会吗") asks a real question.
 _MA_GOES_ON_RE = re.compile(
@@ -609,6 +678,33 @@ def _echoes_the_question(input_text: str, output_text: str) -> bool:
     return False
 
 
+def _opens_a_request(sentence: str) -> bool:
+    """Does this sentence open with "can you", "could you", "would you" or
+    "will you", past any lead-ins ("OK can you...")?"""
+    words = _EN_WORD_RE.findall(sentence.lower().replace("’", "'"))
+    while words and words[0] in _EN_LEAD_INS:
+        words.pop(0)
+    return len(words) > 1 and words[0] in _EN_REQUEST_MODALS and words[1] == "you"
+
+
+def _only_dropped_the_request(input_text: str, output_text: str) -> bool:
+    """Is the output a polite command that keeps all the speaker's words but
+    the "can you" of their request? ("can you please send it" -> "Please send
+    it.") Every question the speaker asked has to be such a request, or the
+    same words could answer it ("Is the meeting at three? Can you confirm,
+    please?" -> "The meeting is at three. Please confirm.")."""
+    if not all(_opens_a_request(sentence) for sentence in _sentences(input_text)
+               if _sentence_is_question(sentence)):
+        return False
+    output_units = _content_units(output_text)
+    dropped = _content_units(input_text) - output_units
+    return (any(unit in _POLITE_UNITS for unit in output_units)
+            and dropped["you"] > 0
+            and any(dropped[modal] for modal in _EN_REQUEST_MODALS)
+            and set(dropped) <= (_EN_REQUEST_MODALS | _EN_LEAD_INS
+                                 | _POLITE_UNITS | {"you"}))
+
+
 def _question_became_statement(input_text: str, output_text: str,
                                max_share: float = _MAX_ADDED_SHARE) -> bool:
     """Answer shape 1: the output no longer asks the dictated question, and
@@ -635,8 +731,11 @@ def _question_became_statement(input_text: str, output_text: str,
             and _MA_GOES_ON_RE.search(input_text) and not _is_question(as_emphasis)):
         return False
     # A request turned into a polite command: "can you send me the report by
-    # friday" -> "Please send me the report by Friday."
-    if added and set(added) <= _POLITE_UNITS:
+    # friday" -> "Please send me the report by Friday." When the speaker said
+    # "please" already, nothing is added and the command only drops the "can
+    # you": "can you please send it" -> "Please send it."
+    if set(added) <= _POLITE_UNITS and (
+            added or _only_dropped_the_request(input_text, output_text)):
         return False
     return True
 
