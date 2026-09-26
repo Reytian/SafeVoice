@@ -25,10 +25,13 @@ Conservative scope:
   them with regex breaks meaningful sentences ("这个产品" must keep 这个).
 - So are English fillers that may be an acronym, name or unit instead
   ("the ER", "DD MM YYYY", "5 mm", "uh-huh"); see _EN_FILLER_RE.
+- So are all English fillers when the transcript's language has them as
+  words (German "um 5 Uhr", Portuguese "um carro"); see
+  _EN_FILLERS_ARE_WORDS_IN.
 """
 
 import re
-from typing import Iterable
+from typing import Iterable, Optional
 
 # Chinese single-character hesitations. These are nearly always droppable
 # regardless of context — they don't form meaningful words on their own.
@@ -93,6 +96,29 @@ def _strip_en_filler(m: re.Match) -> str:
     return m.group(0)
 
 
+# CRITICAL: languages in which some of _EN_FILLER_WORDS are everyday words.
+# They are cased like a hesitation, lowercase inside a sentence and
+# capitalised at its start, so the case rules above can't save them:
+# German "wir treffen uns um 5 Uhr" (at) and "er kommt" (he), Dutch "er
+# is" (there is), Portuguese "tenho um carro" (a), Danish "det er godt"
+# (is), Swedish "jag ser er" (you), Turkish "er geç" (sooner or later),
+# Czech "technický um" (skill), Vietnamese "um tùm" (lush). A transcript
+# in one of these skips the English filler rule.
+# Any other language keeps it, and so does an unknown one. In Chinese or
+# Russian text a Latin "um" is an English hesitation ("嗯 um 我觉得"), and
+# in the ASR's other Latin-script languages these are interjections at most.
+_EN_FILLERS_ARE_WORDS_IN = frozenset((
+    "czech", "danish", "dutch", "german", "portuguese", "swedish",
+    "turkish", "vietnamese",
+))
+
+
+def _strips_en_fillers(language: Optional[str]) -> bool:
+    """Whether the English filler rule runs on a transcript in *language*,
+    a name as ASREngine reports it ("German"), or None if unknown."""
+    return (language or "").casefold() not in _EN_FILLERS_ARE_WORDS_IN
+
+
 # Stuttering: same word repeated 2+ times with whitespace.
 # English: "I I want" -> "I want"; "the the cat" -> "the cat".
 # CRITICAL: restricted to ASCII letters ([A-Za-z]+), NOT \w. Using \w would
@@ -118,12 +144,17 @@ _WS_RE = re.compile(r"[ \t]{2,}")
 _LEADING_PUNCT_RE = re.compile(r"^[\s，、,]+")
 
 
-def strip_filler_words(text: str) -> str:
+def strip_filler_words(text: str, language: Optional[str] = None) -> str:
     """Remove obvious filler words and stutters from ASR text.
 
     Safe to call on any string in any language; rules are conservative
     and language-detect themselves. Returns the original text unchanged
     if no fillers are found. Never raises.
+
+    The English filler rule can't tell from the text alone that "um" is
+    German for "at", so pass the transcript's *language* as ASREngine
+    reports it ("German"). The rule is skipped for a language in
+    _EN_FILLERS_ARE_WORDS_IN and runs for any other, or for None.
     """
     if not text:
         return text
@@ -138,8 +169,10 @@ def strip_filler_words(text: str) -> str:
     # 2. Leading Chinese hesitation at utterance start.
     out = _CN_HESITATION_LEADING_RE.sub("", out)
 
-    # 3. English filler words (um/uh/er/ah/hmm/mm).
-    out = _EN_FILLER_RE.sub(_strip_en_filler, out)
+    # 3. English filler words (um/uh/er/ah/hmm/mm), unless the transcript's
+    #    language uses them as words.
+    if _strips_en_fillers(language):
+        out = _EN_FILLER_RE.sub(_strip_en_filler, out)
 
     # 4. Chinese single-char stutter (我我想 -> 我想).
     out = _CN_STUTTER_RE.sub(r"\1", out)
@@ -155,11 +188,12 @@ def strip_filler_words(text: str) -> str:
     return out.strip()
 
 
-def has_filler_words(text: str) -> bool:
+def has_filler_words(text: str, language: Optional[str] = None) -> bool:
     """Cheap predicate: does this text contain anything we'd strip?
 
     Useful for short-circuiting the postprocess call when the input is
-    already clean (saves a regex pass on hot paths).
+    already clean (saves a regex pass on hot paths). Pass the same
+    *language* as to strip_filler_words.
     """
     if not text:
         return False
@@ -167,9 +201,10 @@ def has_filler_words(text: str) -> bool:
         return True
     if _CN_HESITATION_LEADING_RE.search(text):
         return True
-    for m in _EN_FILLER_RE.finditer(text):
-        if _strip_en_filler(m) != m.group(0):
-            return True
+    if _strips_en_fillers(language):
+        for m in _EN_FILLER_RE.finditer(text):
+            if _strip_en_filler(m) != m.group(0):
+                return True
     if _CN_STUTTER_RE.search(text):
         return True
     if _EN_STUTTER_RE.search(text):
