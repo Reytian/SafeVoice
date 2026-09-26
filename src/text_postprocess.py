@@ -23,6 +23,8 @@ Conservative scope:
 - Ambiguous discourse markers (那个 / 这个 / 就是 / 然后 / like / you know)
   are LEFT ALONE here and handled by the LLM with full context. Stripping
   them with regex breaks meaningful sentences ("这个产品" must keep 这个).
+- So are English fillers that may be an acronym, name or unit instead
+  ("the ER", "DD MM YYYY", "5 mm", "uh-huh"); see _EN_FILLER_RE.
 """
 
 import re
@@ -47,11 +49,49 @@ _CN_HESITATION_LEADING_RE = re.compile(rf"^[{_CN_HESITATION_CHARS}]+(?=[^\s，�
 
 # English hesitations. Word-boundary matched so substrings inside real
 # words ("umbrella", "ahead") are preserved.
+# CRITICAL: several of these are also acronyms, names and units. This strip
+# runs before the LLM and is what gets pasted without one, so a word it
+# drops is lost on every path: "the ER last night" -> "the last night",
+# "DD MM YYYY" -> "DD YYYY", "5 mm long" -> "5 long". _strip_en_filler
+# only removes a match that
+# - is lowercase. Inside a sentence ASR writes a hesitation in lowercase,
+#   while acronyms, names and unit symbols keep their capitals ("ER", "an
+#   HMM", "call Er", "5 Ah"). A sentence may open with a capitalised
+#   hesitation ("Um, so ..."), so there a capitalised filler still goes.
+#   A name like "Er" that opens a sentence goes with it, which is rare.
+# - is not "mm" or "ah" right after a number. Case can't tell these units
+#   from the hesitations, but "5 mm" is millimetres and "5 ah" amp-hours.
+#   After a comma it is a hesitation again: "5, mm, 6".
+# A filler joined to a neighbouring word by - / . or : is part of that
+# word ("uh-huh", "mm-hmm", "mm/dd/yyyy", "hh:mm", "5-mm"), so the pattern
+# doesn't match it. Still lost: "mm" as a unit with no number ("in mm").
 _EN_FILLER_WORDS = ("um", "umm", "ummm", "uh", "uhh", "uhm", "er", "erm", "ah", "ahh", "hmm", "mm")
 _EN_FILLER_RE = re.compile(
-    r"\b(?:" + "|".join(_EN_FILLER_WORDS) + r")\b[\s,]*",
+    r"(?<!\w[-/.:])\b(" + "|".join(_EN_FILLER_WORDS) + r")\b(?![-/.:]\w)[\s,]*",
     flags=re.IGNORECASE,
 )
+_EN_UNIT_FILLERS = ("mm", "ah")
+_AFTER_NUMBER_RE = re.compile(r"\d\s*$")
+# What precedes a filler that opens a sentence: nothing or the end of the
+# last sentence, then spaces and commas. A comma can be what is left of a
+# Chinese hesitation removed before this step ("嗯，Um, so" -> "，Um, so").
+_SENTENCE_START_RE = re.compile(r"(?:^|[.!?…。！？])[\s，、,]*$")
+
+
+def _strip_en_filler(m: re.Match) -> str:
+    """Replacement for an _EN_FILLER_RE match: nothing if the filler is a
+    hesitation, else the match as is. The rules are above _EN_FILLER_RE.
+    """
+    filler = m.group(1)
+    before = m.string[:m.start()]
+    if filler.islower():
+        if filler in _EN_UNIT_FILLERS and _AFTER_NUMBER_RE.search(before):
+            return m.group(0)
+        return ""
+    if filler.istitle() and _SENTENCE_START_RE.search(before):
+        return ""
+    return m.group(0)
+
 
 # Stuttering: same word repeated 2+ times with whitespace.
 # English: "I I want" -> "I want"; "the the cat" -> "the cat".
@@ -99,7 +139,7 @@ def strip_filler_words(text: str) -> str:
     out = _CN_HESITATION_LEADING_RE.sub("", out)
 
     # 3. English filler words (um/uh/er/ah/hmm/mm).
-    out = _EN_FILLER_RE.sub("", out)
+    out = _EN_FILLER_RE.sub(_strip_en_filler, out)
 
     # 4. Chinese single-char stutter (我我想 -> 我想).
     out = _CN_STUTTER_RE.sub(r"\1", out)
@@ -127,8 +167,9 @@ def has_filler_words(text: str) -> bool:
         return True
     if _CN_HESITATION_LEADING_RE.search(text):
         return True
-    if _EN_FILLER_RE.search(text):
-        return True
+    for m in _EN_FILLER_RE.finditer(text):
+        if _strip_en_filler(m) != m.group(0):
+            return True
     if _CN_STUTTER_RE.search(text):
         return True
     if _EN_STUTTER_RE.search(text):
