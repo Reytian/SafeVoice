@@ -398,16 +398,157 @@ _EN_CLEFT_VERBS = frozenset((
     "saved", "saves", "killed", "kills", "took", "takes", "convinced",
     "caught", "drove",
 ))
-# Words that open a clause of their own. An is/was after one of them belongs
-# to that clause, so the sentence still asks: "what happens when the queue is
-# full", "what happened to the build that was failing", "what makes you think
-# it is broken", "what happens every time it is run".
+# Words that open or join a clause of their own. An is/was after one of them
+# belongs to that clause, so the sentence still asks: "what happens when the
+# queue is full", "what happens to the data whenever the account is
+# deleted", "what caused the crash and was any data lost", "what makes you
+# think it is broken", "what caused the error saying access is denied".
 _EN_CLAUSE_OPENERS = _EN_QUESTION_WORDS | {
-    "i", "he", "she", "we", "they", "that", "if", "whether", "because",
-    "since", "after", "before", "until", "till", "unless", "once", "while",
-    "as", "although", "time", "think", "thought", "say", "said", "believe",
-    "feel", "sure",
+    "if", "whether", "because", "since", "after", "before", "until", "till",
+    "unless", "once", "while", "whilst", "as", "although", "though", "even",
+    "whenever", "wherever", "whatever", "whoever", "whichever", "however",
+    "provided", "providing", "assuming", "given", "supposing", "whereas",
+    "considering", "except", "and", "but", "or", "nor", "so", "yet",
+    "think", "thinks", "thought", "say", "says", "said", "saying", "tell",
+    "tells", "told", "telling", "believe", "believed", "feel", "felt", "know",
+    "knew", "realize", "realise", "realized", "realised", "assume", "assumed",
+    "decide", "decided", "notice", "noticed", "conclude", "concluded",
+    "suspect", "suspected", "guess", "guessed", "expect", "expected",
+    "suppose", "supposed", "claimed", "claiming", "mentioned", "promised",
+    "stated", "stating", "showing", "wonder", "wondered", "sure", "certain",
+    "confident", "worried", "afraid", "aware",
 }
+# The free relative of a pseudo-cleft is "what" + verb + an object or an
+# adjunct: "what caused the outage", "what happened to me yesterday", "what
+# needs to be done". A second subject in it starts a clause of its own that
+# the is/was belongs to, so the sentence still asks: "what happened to the
+# project Sarah was leading", "what caused the bug the customer is seeing",
+# "what happened to the PR it is based on".
+_EN_DETERMINERS = frozenset((
+    "the", "a", "an", "this", "that", "these", "those", "my", "your", "our",
+    "their", "his", "her", "its", "some", "any", "every", "each", "no",
+    "another",
+))
+_EN_SUBJECT_PRONOUNS = frozenset(("i", "we", "they", "he", "she"))
+_EN_OBJECT_PRONOUNS = frozenset(("me", "us", "him", "them"))
+_EN_PREPOSITIONS = frozenset((
+    "to", "with", "for", "in", "on", "at", "about", "from", "of", "by",
+    "during", "into", "onto", "over", "under", "through", "across", "around",
+    "between", "among", "without", "within", "behind", "near", "off", "out",
+    "up",
+))
+# Longer than this, the words before the is/was are more than a free
+# relative, and the sentence keeps its question reading.
+_MAX_FREE_RELATIVE_WORDS = 6
+# "the" + one of these is a degree, not a noun phrase: "what helped the most".
+_EN_SUPERLATIVES = frozenset((
+    "most", "least", "best", "worst", "first", "last", "longest", "biggest",
+    "hardest", "easiest", "fastest", "slowest", "largest", "smallest",
+    "highest", "lowest", "greatest", "latest", "earliest", "oldest", "newest",
+    "cheapest", "simplest", "strongest", "closest", "clearest", "quickest",
+    "toughest", "safest", "strangest", "weirdest",
+))
+_CAPITALIZED_WORD_RE = re.compile(r"\b[A-Z][a-z]+(?:'[a-z]+)?\b")
+# Words that end a yes/no question run on after the is/was, where a
+# statement needs a verb: "what matters is the deadline realistic", "what
+# happened is my account locked", "what happened is everyone ok".
+_EN_STATE_WORDS = frozenset((
+    "ready", "ok", "okay", "fine", "done", "broken", "down", "up", "correct",
+    "right", "wrong", "true", "false", "possible", "available", "open",
+    "closed", "free", "safe", "secure", "valid", "enough", "finished",
+    "complete", "completed", "deployed", "merged", "released", "shipped",
+    "installed", "updated", "enabled", "disabled", "fixed", "live", "stable",
+    "affected", "lost", "stolen", "hacked", "hurt", "locked", "late",
+    "missing", "gone", "back", "empty", "full", "realistic", "reasonable",
+    "normal", "necessary", "required", "allowed", "supported", "compatible",
+    "approved", "signed", "paid", "declined", "cancelled", "canceled",
+    "deleted", "expired", "suspended", "urgent", "red", "green", "idle",
+    "cold", "on", "off", "over", "there", "here", "sure", "certain",
+    "successful", "unsuccessful", "sent", "delivered", "received", "reviewed",
+    "tested", "submitted", "scheduled", "booked", "confirmed", "published",
+    "posted", "uploaded", "charged", "refunded", "processed", "resolved",
+    "taken", "given", "seen", "written", "sold", "filed",
+))
+# Adverbs that can come between the is/was and the rest of a statement
+# ("was never explained", "is still the config"), and after a state that
+# ends a question ("is the site down again").
+_EN_SENTENCE_ADVERBS = frozenset((
+    "never", "not", "always", "still", "really", "clearly", "obviously",
+    "definitely", "probably", "actually", "just", "also", "basically",
+    "mostly", "partly", "simply", "only", "again", "now", "yet", "already",
+    "too", "today", "yesterday",
+))
+# -ing words that are usually nouns ("was the team meeting"), unlike the
+# participle of a question ("is the pipeline reporting").
+_EN_ING_NOUNS = frozenset((
+    "meeting", "building", "morning", "evening", "thing", "nothing",
+    "something", "anything", "everything", "feeling", "setting", "ceiling",
+    "wedding", "spring", "string", "ring", "king", "wing", "ending",
+    "beginning", "training", "pricing", "timing", "marketing", "planning",
+    "wording", "heading", "booking", "offering", "opening", "warning",
+    "ranking", "hearing", "briefing", "ruling", "recording", "drawing",
+    "painting", "housing", "parking", "landing", "onboarding", "billing",
+    "hosting", "branding", "messaging",
+))
+_EN_BE_FORMS = frozenset((
+    "am", "is", "are", "was", "were", "isn't", "aren't", "wasn't", "weren't",
+))
+_EN_MODALS = frozenset((
+    "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+    "can't", "couldn't", "won't", "wouldn't", "shouldn't",
+))
+# "do", "have" and their forms also say what someone did ("...that we did it
+# right", "...I had it on mute"), so they only ask with a person after them.
+_EN_DO_HAVE = frozenset((
+    "do", "does", "did", "don't", "doesn't", "didn't", "have", "has", "had",
+    "haven't", "hasn't", "hadn't",
+))
+# Subjects that only a question puts right after an auxiliary ("is anyone
+# hurt", "were any users affected"), and ones a statement can open with too
+# ("everyone left early") but that ask before a state ("is everyone ok").
+_EN_ANY_SUBJECTS = frozenset(("any", "anyone", "anybody", "anything"))
+_EN_QUANTIFIER_SUBJECTS = frozenset((
+    "everyone", "everybody", "everything", "someone", "somebody", "something",
+))
+# Words after which a new question can start in a run-on sentence: "...the
+# server crashed so is the fix ready", "...and where are the logs".
+_EN_FOLLOW_UP_OPENERS = frozenset((
+    "so", "and", "but", "or", "then", "now", "also", "ok", "okay", "well",
+    "anyway", "alright",
+))
+# Past forms that tell a relative "which" ("...which led to an outage") from
+# one that asks ("...which service failed").
+_EN_IRREGULAR_PASTS = frozenset((
+    "led", "broke", "took", "made", "got", "left", "cost", "meant", "put",
+    "set", "sent", "kept", "brought", "caught", "gave", "went", "came", "ran",
+    "hit", "let", "cut", "felt", "told", "said", "found", "held", "lost",
+    "paid", "sold", "built", "spent", "began", "became", "drove", "fell",
+    "grew", "knew", "saw", "wrote", "won",
+))
+# Verbs a do-question tacked on at the end asks about: "...did the backup
+# run", "...did the payment go through", "...does the fix work".
+_EN_BARE_VERBS = frozenset((
+    "run", "pass", "work", "finish", "fail", "start", "stop", "sync",
+    "deploy", "succeed", "go", "arrive", "ship", "complete", "help", "matter",
+    "change", "break", "crash", "load", "launch", "happen", "land", "close",
+    "open", "print", "save", "show", "update", "upload", "respond", "reply",
+    "come", "sell", "win", "count", "apply", "exist", "compile", "build",
+    "install", "restart", "recover", "fix", "hold", "last",
+))
+_EN_PARTICLES = frozenset((
+    "through", "out", "up", "down", "over", "off", "on", "in", "back",
+))
+# A fragment that asks for input at the end: "...the server crashed any
+# ideas". After a verb it is an object instead: "...we didn't get any ideas".
+_EN_FOLLOW_UP_NOUNS = frozenset((
+    "ideas", "thoughts", "suggestions", "updates", "news", "luck",
+    "objections", "takers", "volunteers", "comments", "feedback", "questions",
+))
+_EN_TAKES_AN_OBJECT = frozenset((
+    "have", "has", "had", "get", "got", "gets", "need", "needs", "needed",
+    "want", "wants", "wanted", "see", "saw", "find", "found", "there", "no",
+    "without", "with", "for", "of", "about", "give", "gave", "take", "took",
+))
 # Subjects that make the is/was after a verb's clause ask a question of its
 # own: "what matters more is it speed or quality", "what happened was he
 # fired".
@@ -473,38 +614,170 @@ def _content_units(text: str) -> Counter:
 
 
 def _asks_later(words: list) -> bool:
-    """Does a question start somewhere in these words? ("...so what do we do
-    now", "...is that normal"). As at the start of a sentence, "do" and "have"
-    only ask with a personal pronoun, so "...that we do it right" doesn't."""
-    for word, nxt in zip(words, words[1:]):
-        if word in _EN_COMMAND_AUXILIARIES:
-            if nxt in _EN_PERSONAL_PRONOUNS:
+    """Does a question start somewhere in these words, the rest of a
+    statement? ("...so what do we do now", "...is that normal", "...did
+    anyone notice", "...so is the fix ready", "...was the data lost")"""
+    for i, word in enumerate(words):
+        nxt = words[i + 1] if i + 1 < len(words) else ""
+        after_break = i > 0 and words[i - 1] in _EN_FOLLOW_UP_OPENERS
+        wh_word = word.split("'")[0]
+        if wh_word in _EN_QUESTION_WORDS:
+            # "...so what now", "...what's the plan", "...where are the logs",
+            # "...crashed why", "...which service failed". A bare "who",
+            # "what" or "which" in the middle is more often a relative ("the
+            # engineer who was on call", "...which led to an outage").
+            if i > 0 and (word != wh_word or after_break or not nxt or (
+                    wh_word in ("where", "when", "why", "how")
+                    and nxt in _EN_AUXILIARIES) or (
+                    word == "which" and not (
+                        nxt in _EN_AUXILIARIES or nxt in _EN_SUBJECTS
+                        or nxt in _EN_OBJECT_PRONOUNS
+                        or nxt in _EN_IRREGULAR_PASTS
+                        or nxt.endswith(("ed", "s"))))):
                 return True
-        elif word in _EN_AUXILIARIES and (nxt in _EN_CLEFT_SUBJECTS
-                                          or nxt in ("that", "this")):
-            return True
-    return False
+        elif word in _EN_AUXILIARIES and nxt:
+            if word in _EN_DO_HAVE:
+                asks = nxt in _EN_PERSONAL_PRONOUNS or nxt in (
+                    "he", "she", "anyone", "anybody")
+            else:
+                asks = (nxt in _EN_CLEFT_SUBJECTS or nxt in ("that", "this")
+                        or nxt in _EN_ANY_SUBJECTS
+                        or nxt in _EN_QUANTIFIER_SUBJECTS
+                        or (word in _EN_MODALS and nxt in _EN_SUBJECTS)
+                        or (nxt == "there" and i + 2 < len(words) and (
+                            words[i + 2] in _EN_DETERMINERS
+                            or words[i + 2] in _EN_ANY_SUBJECTS)))
+            if asks or (after_break and nxt in _EN_SUBJECTS):
+                return True
+    # A yes/no question tacked on at the end: "...was the data lost", "...are
+    # the tests passing", "...did the backup run", "...did the payment go
+    # through", or a request for input: "...any ideas".
+    if (len(words) >= 5 and words[-4] in _EN_BE_FORMS
+            and words[-3] in _EN_DETERMINERS and _ends_a_question(words[-1])):
+        return True
+    tail = words[:-1] if words and words[-1] in _EN_PARTICLES else words
+    if (len(tail) >= 5 and tail[-4] in ("do", "does", "did", "didn't", "doesn't")
+            and tail[-3] in _EN_DETERMINERS and tail[-1] in _EN_BARE_VERBS):
+        return True
+    return (len(words) >= 3 and words[-2] == "any"
+            and words[-1] in _EN_FOLLOW_UP_NOUNS
+            and words[-3] not in _EN_TAKES_AN_OBJECT
+            and words[-3] not in _EN_AUXILIARIES)
 
 
-def _opens_a_cleft(words: list) -> bool:
+def _ends_a_question(word: str) -> bool:
+    """Is this the state or participle a yes/no question ends on ("is the
+    build broken", "is the pipeline reporting")?"""
+    return word in _EN_STATE_WORDS or (
+        word.endswith("ing") and word not in _EN_ING_NOUNS)
+
+
+def _free_relative_ends_here(middle: list, capitalized: frozenset) -> bool:
+    """Are these words, between "what" + verb and an is/was, only the rest
+    of that free relative ("the outage" in "what caused the outage was...",
+    "to me yesterday", "to be done"), so the is/was belongs to it?"""
+    if len(middle) > _MAX_FREE_RELATIVE_WORDS:
+        return False
+    # "open": after the verb, a preposition or "to"; "object": after an
+    # object pronoun; "phrase": inside a noun phrase or after another word.
+    state = "open"
+    skip = False
+    for i, word in enumerate(middle):
+        if skip:
+            skip = False
+            continue
+        nxt = middle[i + 1] if i + 1 < len(middle) else ""
+        if (word in _EN_CLAUSE_OPENERS or word in _EN_SUBJECT_PRONOUNS
+                or word in _EN_AUXILIARIES):
+            return False
+        if word == "the" and nxt in _EN_SUPERLATIVES:
+            skip = True  # "what helped the most", "what took the longest"
+        elif word in _EN_DETERMINERS or word in ("you", "it"):
+            # A second noun phrase or a subject after one ("the bug the
+            # customer is seeing", "the package you told me was shipped"),
+            # or a subject after an object ("what convinced you it was").
+            if state == "phrase" or (state == "object"
+                                     and word not in _EN_DETERMINERS):
+                return False
+            state = "phrase" if word in _EN_DETERMINERS else "object"
+        elif word in _EN_OBJECT_PRONOUNS:
+            state = "object"
+        elif word in _EN_PREPOSITIONS:
+            state = "open"
+            skip = word == "to" and nxt == "be"  # "what needs to be done"
+        elif (word in capitalized and state == "phrase"
+              and middle[i - 1] not in _EN_DETERMINERS):
+            return False  # a name after a noun: "the project Sarah was leading"
+        else:
+            state = "phrase"
+    return True
+
+
+def _completes_a_cleft(rest: list, short_relative: bool) -> bool:
+    """Do these words, after the is/was of "what" + verb, complete a
+    statement ("the server crashed", "that we ship on time", "a rewrite")
+    rather than ask something ("is it speed or quality", "is the build
+    broken", "is everyone ok", "who pays for the upgrade")? short_relative
+    says the free relative before the is/was was at most two words, too
+    short to hide a clause of its own ("the project Sarah")."""
+    while rest and rest[0] in _EN_SENTENCE_ADVERBS:
+        rest = rest[1:]  # "was never explained"
+    while len(rest) > 1 and rest[-1] in _EN_SENTENCE_ADVERBS:
+        rest = rest[:-1]  # "is the site down again"
+    if not rest:
+        return False
+    first, size = rest[0], len(rest)
+    if first.split("'")[0] in _EN_QUESTION_WORDS or first in ("whether", "if"):
+        return False  # "what needs to be decided is who pays"
+    if first == "there":  # "there was a power cut", but "was there a fix"
+        return size > 2 and rest[1] in _EN_BE_FORMS and not _asks_later(rest)
+    if (first in _EN_INVERTED_SUBJECTS or first in _EN_ANY_SUBJECTS
+            or "or" in rest or _asks_later(rest)):
+        return False
+    if first in _EN_QUANTIFIER_SUBJECTS:  # "everyone left" but "everyone ok"
+        return size > 1 and not (size == 2 and rest[1] in _EN_STATE_WORDS)
+    if first == "that":  # "that we ship on time", but "that true", "that a mistake"
+        return size > 2 and not (size == 3 and rest[1] in _EN_DETERMINERS)
+    if first in _EN_DETERMINERS:  # "the price", but "the server down"
+        return size > 1 and not (size == 3 and _ends_a_question(rest[2]))
+    if first in ("to", "i", "we", "they", "you"):
+        return size > 1
+    if size == 1:
+        # A noun ("what counts is effort"), or after a short free relative a
+        # participle ("what remains is testing", "what caused the outage was
+        # never explained"), but not the participle or state an embedded
+        # clause ends on ("what happened to the project sarah was leading").
+        return first not in _EN_STATE_WORDS and (
+            short_relative
+            or not first.endswith(("ing", "ed", "en", "able", "ible")))
+    return size > 2
+
+
+def _opens_a_cleft(words: list, capitalized: frozenset = frozenset()) -> bool:
     """Do these words, which start with a wh-word, open a clause that a later
     is/was makes the subject of a statement? ("what we need is...", "what
-    happened was...")"""
+    happened was...") capitalized holds the words written with a capital,
+    which inside a sentence are names."""
     after = words[1] if len(words) > 1 else ""
     if after in _EN_CLEFT_SUBJECTS:
         return any(word in ("is", "was") for word in words[2:])
     if words[0] != "what" or after not in _EN_CLEFT_VERBS:
         return False
     # Unlike "what we need", "what happened" asks on its own. It only makes a
-    # statement when an is/was follows the verb's clause, and what comes after
-    # the is/was doesn't ask something itself.
+    # statement when the first is/was ends the verb's free relative, and what
+    # comes after it completes a statement. Anything else keeps the question
+    # reading, as for any other wh-word.
     for i in range(2, len(words) - 1):
-        if words[i] in _EN_CLAUSE_OPENERS:
-            return False
         if words[i] in ("is", "was"):
-            rest = words[i + 1:]
-            return rest[0] not in _EN_INVERTED_SUBJECTS and not _asks_later(rest)
+            return (_free_relative_ends_here(words[2:i], capitalized)
+                    and _completes_a_cleft(words[i + 1:], i - 2 <= 2))
     return False
+
+
+def _capitalized_words(text: str) -> frozenset:
+    """The words written with a capital letter, lowercased."""
+    return frozenset(word.lower() for word in
+                     _CAPITALIZED_WORD_RE.findall(text.replace("’", "'")))
 
 
 def _english_question(sentence: str) -> bool:
@@ -525,7 +798,8 @@ def _english_question(sentence: str) -> bool:
     after = words[1] if len(words) > 1 else ""
     wh_word = first.split("'")[0]  # "what's" -> "what"
     if wh_word in _EN_QUESTION_WORDS:
-        if (first == wh_word and _opens_a_cleft(words)
+        if (first == wh_word
+                and _opens_a_cleft(words, _capitalized_words(lead))
                 and not any(word in _EN_ASKING for word in words)):
             # "what we need is more time", "how he did it was clever", "what
             # happened was the server crashed"; but "what I want to know is
@@ -609,6 +883,13 @@ _POLITE_UNITS = frozenset(("please", "kindly", "请", "請"))
 # The modal a command drops from a request, along with "you": "could you
 # please review it" -> "Please review it."
 _EN_REQUEST_MODALS = frozenset(("can", "could", "would", "will"))
+# Spoken fillers a command may drop along with the "can you" (rule E2):
+# "could you please just send me the file" -> "Please send me the file."
+_EN_REQUEST_FILLERS = frozenset((
+    "just", "like", "basically", "actually", "literally", "really", "kinda",
+    "sorta", "um", "umm", "uh", "uhh", "uhm", "er", "erm", "ah", "hmm",
+))
+_EN_REQUEST_FILLER_PAIRS = frozenset((("kind", "of"), ("sort", "of")))
 # A 吗 the utterance runs on after is where a misheard 嘛 sits ("这样就挺好的
 # 吗不用再改了"). A final 吗 ("明天开会吗") asks a real question.
 _MA_GOES_ON_RE = re.compile(
@@ -693,31 +974,78 @@ def _echoes_the_question(input_text: str, output_text: str) -> bool:
     return False
 
 
-def _opens_a_request(sentence: str) -> bool:
-    """Does this sentence open with "can you", "could you", "would you" or
-    "will you", past any lead-ins ("OK can you...")?"""
-    words = _EN_WORD_RE.findall(sentence.lower().replace("’", "'"))
-    while words and words[0] in _EN_LEAD_INS:
-        words.pop(0)
-    return len(words) > 1 and words[0] in _EN_REQUEST_MODALS and words[1] == "you"
+def _command_units(sentence: str) -> list:
+    """A sentence's content units in order, lowercased and with numbers as
+    digits, past the lead-ins it opens with ("OK so can you..." -> "can
+    you...")."""
+    units = [_NUMBER_UNITS.get(unit, unit) for unit in
+             (u.lower() for u in _UNIT_RE.findall(sentence.replace("’", "'")))]
+    while units and units[0] in _EN_LEAD_INS:
+        units.pop(0)
+    return units
+
+
+def _only_dropped_fillers(said: list, written: list) -> bool:
+    """Is written what was said, in the same order, with nothing taken out
+    but spoken fillers?"""
+    i = j = 0
+    while i < len(said):
+        if j < len(written) and said[i] == written[j]:
+            i += 1
+            j += 1
+        elif tuple(said[i:i + 2]) in _EN_REQUEST_FILLER_PAIRS:
+            i += 2
+        elif said[i] in _EN_REQUEST_FILLERS:
+            i += 1
+        else:
+            return False
+    return j == len(written)
+
+
+def _clause_asks(clause: str) -> bool:
+    """Does this clause ask something of its own, apart from the question
+    mark the whole sentence ends with?"""
+    return _sentence_is_question(clause.strip().rstrip("?？؟ \t"))
 
 
 def _only_dropped_the_request(input_text: str, output_text: str) -> bool:
-    """Is the output a polite command that keeps all the speaker's words but
-    the "can you" of their request? ("can you please send it" -> "Please send
-    it.") Every question the speaker asked has to be such a request, or the
-    same words could answer it ("Is the meeting at three? Can you confirm,
-    please?" -> "The meeting is at three. Please confirm.")."""
-    if not all(_opens_a_request(sentence) for sentence in _sentences(input_text)
-               if _sentence_is_question(sentence)):
+    """Is the output the speaker's request as a polite command: their own
+    words in their order, without the "can you" / "could you" / "would you"
+    / "will you" each request opens with, and without lead-ins or spoken
+    fillers? ("can you please send it" -> "Please send it.", "could you
+    please just send me the file" -> "Please send me the file.")
+
+    Every question the speaker asked has to be such a request, and nothing
+    else may move, go or split off, or the same words can answer a question
+    ("Is the meeting at three? Can you confirm, please?", "Can you please
+    check the logs, is the server down?" -> "Please check the logs. The
+    server is down.", "could you please confirm the meeting is at three" ->
+    "Please confirm. The meeting is at three.")."""
+    in_sentences = _sentences(input_text)
+    out_sentences = _sentences(output_text)
+    if not out_sentences or len(out_sentences) > len(in_sentences):
         return False
-    output_units = _content_units(output_text)
-    dropped = _content_units(input_text) - output_units
-    return (any(unit in _POLITE_UNITS for unit in output_units)
-            and dropped["you"] > 0
-            and any(dropped[modal] for modal in _EN_REQUEST_MODALS)
-            and set(dropped) <= (_EN_REQUEST_MODALS | _EN_LEAD_INS
-                                 | _POLITE_UNITS | {"you"}))
+    said = []
+    requests = 0
+    for sentence in in_sentences:
+        units = _command_units(sentence)
+        if len(units) > 1 and units[0] in _EN_REQUEST_MODALS and units[1] == "you":
+            if any(_clause_asks(clause)
+                   for clause in _CLAUSE_SPLIT_RE.split(sentence)[1:]):
+                return False
+            requests += 1
+            units = units[2:]
+        elif _sentence_is_question(sentence):
+            return False
+        said += units
+    if not requests or not any(unit in _POLITE_UNITS
+                               for unit in _content_units(output_text)):
+        return False
+    written = [unit for sentence in out_sentences
+               for unit in _command_units(sentence)]
+    return _only_dropped_fillers(
+        [unit for unit in said if unit not in _POLITE_UNITS],
+        [unit for unit in written if unit not in _POLITE_UNITS])
 
 
 def _question_became_statement(input_text: str, output_text: str,
